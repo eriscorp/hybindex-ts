@@ -158,6 +158,8 @@ export async function buildSection(
   const mapDetails: MapDetail[] = [];
   const formulaUsedByCastables: Record<string, string[]> = {};
   const formulaUsedByStatuses: Record<string, string[]> = {};
+  const castableRequiredLevels: Record<string, number> = {};
+  const itemWeaponDamage: Record<string, { smallMin: number; smallMax: number; largeMin: number; largeMax: number }> = {};
 
   let entries: Dirent[] = [];
   try {
@@ -199,6 +201,19 @@ export async function buildSection(
           if (meta) {
             addReverseRef(formulaUsedByCastables, meta.healFormulaName, name);
             addReverseRef(formulaUsedByCastables, meta.damageFormulaName, name);
+          }
+          // First <Requirement>'s <Level Min="N"/> — castables can declare
+          // multiple Requirement blocks per class, but only the first is
+          // used in practice (see DamageCalculator auto-populate).
+          const firstReqMatch = /<Requirements>([\s\S]*?)<\/Requirements>/.exec(content);
+          if (firstReqMatch && firstReqMatch[1]) {
+            const reqBlock = /<Requirement\b[^>]*>([\s\S]*?)<\/Requirement>/.exec(firstReqMatch[1]);
+            if (reqBlock && reqBlock[1]) {
+              const levelMatch = /<Level\b[^>]*\bMin="(\d+)"/.exec(reqBlock[1]);
+              if (levelMatch && levelMatch[1]) {
+                castableRequiredLevels[name] = parseInt(levelMatch[1], 10);
+              }
+            }
           }
         }
       }
@@ -360,6 +375,28 @@ export async function buildSection(
         if (name && firstName === null) firstName = name;
       }
       if (firstName) namesByFilename[file.name] = firstName;
+
+      // Items: capture <Damage SmallMin/SmallMax/LargeMin/LargeMax/> attrs
+      // when present (only weapons have it). Used by the damage calculator
+      // to auto-populate weapon ranges from a referenced item.
+      if (type === 'items' && firstName) {
+        const dmgMatch = /<Damage\b([^>]*)\/>/.exec(content);
+        if (dmgMatch && dmgMatch[1]) {
+          const attrs = dmgMatch[1];
+          const sMin = /\bSmallMin="(-?\d+(?:\.\d+)?)"/.exec(attrs);
+          const sMax = /\bSmallMax="(-?\d+(?:\.\d+)?)"/.exec(attrs);
+          const lMin = /\bLargeMin="(-?\d+(?:\.\d+)?)"/.exec(attrs);
+          const lMax = /\bLargeMax="(-?\d+(?:\.\d+)?)"/.exec(attrs);
+          if (sMin?.[1] && sMax?.[1] && lMin?.[1] && lMax?.[1]) {
+            itemWeaponDamage[firstName] = {
+              smallMin: Number(sMin[1]),
+              smallMax: Number(sMax[1]),
+              largeMin: Number(lMin[1]),
+              largeMax: Number(lMax[1]),
+            };
+          }
+        }
+      }
     }
 
     scanned += 1;
@@ -388,6 +425,7 @@ export async function buildSection(
     fields.castableClasses = castableClasses;
     fields.statusCasters = statusCasters;
     fields.formulaUsedByCastables = formulaUsedByCastables;
+    fields.castableRequiredLevels = castableRequiredLevels;
     // name → filename map (inverse of namesByFilename, kept for backward compat)
     const castableFilenames: Record<string, string> = {};
     for (const [fname, n] of Object.entries(namesByFilename)) {
@@ -403,6 +441,7 @@ export async function buildSection(
   } else if (type === 'items') {
     Object.assign(fields, await scanCategoryContext(libraryPath, 'items'));
     fields.vendorTabs = await scanVendorTabs(libraryPath);
+    fields.itemWeaponDamage = itemWeaponDamage;
   } else if (type === 'creatures') {
     fields.creatureTypes = creatureTypes.sort();
     fields.creatureFamilies = await scanFilenamePrefixes(libraryPath, 'creatures');
@@ -605,6 +644,7 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     castableFilenames: {}, castableClasses: {}, statusCasters: {},
     castableTrainers: {}, itemVendors: {}, itemLootSets: {},
     formulaUsedByCastables: {}, formulaUsedByStatuses: {},
+    castableRequiredLevels: {}, itemWeaponDamage: {},
     npcResponseCalls: {}, npcStringKeys: [],
     creatureTypes: [], elementnames: [], scripts: [], cookieNames: [],
     vendorTabs: [], npcJobs: [], creatureFamilies: [],

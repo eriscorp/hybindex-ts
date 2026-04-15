@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildIndex, buildSection } from '../src/index.js';
 import {
   castableXml,
+  castableXmlWithRequirement,
   cleanup,
   creatureXml,
   itemXml,
@@ -192,6 +193,62 @@ describe('formula reverse index', () => {
       dot_tick: ['Poisoned'],
       end_heal: ['Poisoned', 'Regen'],
     });
+  });
+});
+
+// ── Castable required levels ────────────────────────────────────────────────
+
+describe('castable required levels', () => {
+  it('extracts <Level Min> from the FIRST <Requirement>', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXmlWithRequirement('Clobber', 23, 'Warrior'));
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXmlWithRequirement('Heal', 5, 'Priest'));
+
+    const index = await buildIndex(libraryPath);
+
+    expect(index.castableRequiredLevels).toEqual({ Clobber: 23, Heal: 5 });
+  });
+
+  it('omits castables with no Requirements element', async () => {
+    await writeXml(libraryPath, 'castables', 'plain.xml', castableXml('Plain'));
+    const index = await buildIndex(libraryPath);
+    expect(index.castableRequiredLevels).toEqual({});
+  });
+
+  it('uses only the first Requirement when multiple are declared', async () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<Castable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02"
+          Book="PrimarySpell" Elements="Fire" Class="Wizard"
+          IsAssail="false" Reflectable="false" BreakStealth="false"
+          IncludeInMetafile="true" PvpOnly="false">
+  <Name>Multi</Name>
+  <Requirements>
+    <Requirement Class="Warrior"><Level Min="10" Max="99"/></Requirement>
+    <Requirement Class="Wizard"><Level Min="50" Max="99"/></Requirement>
+  </Requirements>
+</Castable>`;
+    await writeXml(libraryPath, 'castables', 'm.xml', xml);
+    const index = await buildIndex(libraryPath);
+    expect(index.castableRequiredLevels).toEqual({ Multi: 10 });
+  });
+});
+
+// ── Item weapon damage ──────────────────────────────────────────────────────
+
+describe('item weapon damage', () => {
+  it('extracts SmallMin/SmallMax/LargeMin/LargeMax when present', async () => {
+    await writeXml(libraryPath, 'items', 'amber.xml', itemXml('Amber Saber', {
+      damage: { smallMin: 374, smallMax: 604, largeMin: 404, largeMax: 734 },
+    }));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({
+      'Amber Saber': { smallMin: 374, smallMax: 604, largeMin: 404, largeMax: 734 },
+    });
+  });
+
+  it('omits non-weapon items entirely', async () => {
+    await writeXml(libraryPath, 'items', 'potion.xml', itemXml('Potion'));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({});
   });
 });
 

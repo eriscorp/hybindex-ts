@@ -22,6 +22,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   castableCategories: 'castables',
   castableCategoryDetails: 'castables',
   formulaUsedByCastables: 'castables',
+  castableRequiredLevels: 'castables',
 
   // statuses
   statuses: 'statuses',
@@ -38,6 +39,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   itemCategories: 'items',
   itemCategoryDetails: 'items',
   vendorTabs: 'items',
+  itemWeaponDamage: 'items',
 
   // creatures
   creatures: 'creatures',

@@ -127,6 +127,24 @@ export interface WorldIndex {
   formulaUsedByCastables: Record<string, string[]>;
   formulaUsedByStatuses: Record<string, string[]>;
 
+  // Per-castable required minimum level — extracted from the FIRST
+  // <Requirement>'s <Level Min="N"/> inside <Requirements>. Castables can
+  // declare multiple Requirement blocks (per class), but only the first is
+  // used in practice. Maps castable display name → number. Castables with no
+  // Requirements element are absent from the map.
+  castableRequiredLevels: Record<string, number>;
+
+  // Per-item weapon damage — present only on items that declare a
+  // <Damage SmallMin/SmallMax/LargeMin/LargeMax/> element under <Properties>.
+  // Used by the damage calculator to auto-populate weapon ranges from a
+  // referenced weapon. Items without the element are absent from the map.
+  itemWeaponDamage: Record<string, {
+    smallMin: number;
+    smallMax: number;
+    largeMin: number;
+    largeMax: number;
+  }>;
+
   // Localization cross-references
   npcResponseCalls: Record<string, string>; // Call attribute → response text
   npcStringKeys: NpcStringKey[];

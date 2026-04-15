@@ -86,15 +86,41 @@ export const statusXml = (name: string): string =>
   `<?xml version="1.0" encoding="utf-8"?>
 <Status xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}" Icon="1" Duration="5" Tick="1"/>`;
 
-export const itemXml = (name: string, opts: { shopTab?: string; category?: string } = {}): string =>
-  `<?xml version="1.0" encoding="utf-8"?>
+export const itemXml = (
+  name: string,
+  opts: {
+    shopTab?: string;
+    category?: string;
+    damage?: { smallMin: number; smallMax: number; largeMin: number; largeMax: number };
+  } = {},
+): string => {
+  const dmg = opts.damage
+    ? `<Damage SmallMin="${opts.damage.smallMin}" SmallMax="${opts.damage.smallMax}" LargeMin="${opts.damage.largeMin}" LargeMax="${opts.damage.largeMax}"/>`
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
 <Item xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02">
   <Name>${name}</Name>
   <Properties>
     ${opts.shopTab ? `<Vendor ShopTab="${opts.shopTab}"/>` : ''}
     ${opts.category ? `<Categories><Category>${opts.category}</Category></Categories>` : ''}
+    ${dmg}
   </Properties>
 </Item>`;
+};
+
+export const castableXmlWithRequirement = (name: string, levelMin: number, charClass = 'Warrior'): string =>
+  `<?xml version="1.0" encoding="utf-8"?>
+<Castable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02"
+          Book="PrimarySpell" Elements="Fire" Class="${charClass}"
+          IsAssail="false" Reflectable="false" BreakStealth="false"
+          IncludeInMetafile="true" PvpOnly="false">
+  <Name>${name}</Name>
+  <Requirements>
+    <Requirement Class="${charClass}">
+      <Level Min="${levelMin}" Max="99"/>
+    </Requirement>
+  </Requirements>
+</Castable>`;
 
 export const creatureXml = (name: string): string =>
   `<?xml version="1.0" encoding="utf-8"?>

@@ -1,6 +1,6 @@
 # @eriscorp/hybindex-ts
 
-World index builder for Hybrasyl XML libraries. Shared between [Creidhne](https://github.com/hybrasyl/creidhne) (XML editor) and Taliesin (asset viewer) so the index shape stays authoritative in one place.
+World index builder for Hybrasyl XML libraries. Shared between [Creidhne](https://github.com/hybrasyl/creidhne) (XML editor) and [Taliesin](https://github.com/hybrasyl/taliesin) (asset viewer) so the index shape stays authoritative in one place.
 
 ## What it does
 
