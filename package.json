@@ -1,0 +1,50 @@
+{
+  "name": "@eriscorp/hybindex-ts",
+  "version": "0.1.0",
+  "description": "World index builder for Hybrasyl XML libraries — shared between Creidhne and Taliesin",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.4"
+  },
+  "keywords": [
+    "hybrasyl",
+    "dark-ages",
+    "xml",
+    "index",
+    "world"
+  ],
+  "author": "eriscorp",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hybrasyl/hybindex-ts.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
