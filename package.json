@@ -42,8 +42,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hybrasyl/hybindex-ts.git"
+    "url": "git+https://github.com/eriscorp/hybindex-ts.git"
   },
+  "bugs": {
+    "url": "https://github.com/eriscorp/hybindex-ts/issues"
+  },
+  "homepage": "https://github.com/eriscorp/hybindex-ts#readme",
   "publishConfig": {
     "access": "public"
   }
