@@ -21,6 +21,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   statusCasters: 'castables',
   castableCategories: 'castables',
   castableCategoryDetails: 'castables',
+  formulaUsedByCastables: 'castables',
 
   // statuses
   statuses: 'statuses',
@@ -28,6 +29,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   statusesNamesByFilename: 'statuses',
   statusCategories: 'statuses',
   statusCategoryDetails: 'statuses',
+  formulaUsedByStatuses: 'statuses',
 
   // items
   items: 'items',

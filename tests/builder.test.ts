@@ -10,6 +10,7 @@ import {
   mapXml,
   npcXml,
   statusXml,
+  statusXmlWithMeta,
   writeArchivedXml,
   writeLua,
   writeXml,
@@ -141,6 +142,56 @@ describe('buildIndex', () => {
     });
     expect(events).toContain('done:-');
     expect(events.some((e) => e.startsWith('scan:castables'))).toBe(true);
+  });
+});
+
+// ── Formula reverse index ───────────────────────────────────────────────────
+
+describe('formula reverse index', () => {
+  it('extracts healFormulaName + damageFormulaName from castable meta', async () => {
+    await writeXml(libraryPath, 'castables', 'heal.xml', castableXml('Heal Spell', { healFormulaName: 'big_heal' }));
+    await writeXml(libraryPath, 'castables', 'nuke.xml', castableXml('Nuke', { damageFormulaName: 'fire_damage' }));
+    await writeXml(libraryPath, 'castables', 'hybrid.xml', castableXml('Hybrid', {
+      healFormulaName: 'big_heal',
+      damageFormulaName: 'fire_damage',
+    }));
+
+    const index = await buildIndex(libraryPath);
+
+    // readdir() order is platform-dependent, so sort before compare.
+    const sorted = Object.fromEntries(
+      Object.entries(index.formulaUsedByCastables).map(([k, v]) => [k, [...v].sort()]),
+    );
+    expect(sorted).toEqual({
+      big_heal: ['Heal Spell', 'Hybrid'],
+      fire_damage: ['Hybrid', 'Nuke'],
+    });
+  });
+
+  it('ignores castables with no meta annotation', async () => {
+    await writeXml(libraryPath, 'castables', 'plain.xml', castableXml('Plain Spell'));
+    const index = await buildIndex(libraryPath);
+    expect(index.formulaUsedByCastables).toEqual({});
+  });
+
+  it('extracts nested formulaNames from status meta across onApply/onTick/onRemove', async () => {
+    await writeXml(libraryPath, 'statuses', 'poison.xml', statusXmlWithMeta('Poisoned', {
+      onTick: { damage: 'dot_tick' },
+      onRemove: { heal: 'end_heal' },
+    }));
+    await writeXml(libraryPath, 'statuses', 'regen.xml', statusXmlWithMeta('Regen', {
+      onTick: { heal: 'end_heal' },
+    }));
+
+    const index = await buildIndex(libraryPath);
+
+    const sorted = Object.fromEntries(
+      Object.entries(index.formulaUsedByStatuses).map(([k, v]) => [k, [...v].sort()]),
+    );
+    expect(sorted).toEqual({
+      dot_tick: ['Poisoned'],
+      end_heal: ['Poisoned', 'Regen'],
+    });
   });
 });
 

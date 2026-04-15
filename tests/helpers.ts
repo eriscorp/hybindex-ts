@@ -53,16 +53,34 @@ export async function cleanup(root: string): Promise<void> {
 
 // ── Sample XML builders ─────────────────────────────────────────────────────
 
-export const castableXml = (name: string, opts: { class?: string; icon?: number } = {}): string =>
-  `<?xml version="1.0" encoding="utf-8"?>
+export const castableXml = (
+  name: string,
+  opts: { class?: string; icon?: number; healFormulaName?: string; damageFormulaName?: string } = {},
+): string => {
+  const metaBits: Record<string, unknown> = {};
+  if (opts.healFormulaName) metaBits.healFormulaName = opts.healFormulaName;
+  if (opts.damageFormulaName) metaBits.damageFormulaName = opts.damageFormulaName;
+  const metaComment = Object.keys(metaBits).length
+    ? `\n  <!-- creidhne:meta ${JSON.stringify(metaBits)} -->`
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
 <Castable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02"
           Book="PrimarySpell" Elements="Fire"
           Class="${opts.class ?? 'Wizard'}"
           ${opts.icon ? `Icon="${opts.icon}"` : ''}
           IsAssail="false" Reflectable="false" BreakStealth="false"
-          IncludeInMetafile="true" PvpOnly="false">
+          IncludeInMetafile="true" PvpOnly="false">${metaComment}
   <Name>${name}</Name>
 </Castable>`;
+};
+
+export const statusXmlWithMeta = (name: string, formulaNames: Record<string, { heal?: string; damage?: string }>): string => {
+  const meta = JSON.stringify({ formulaNames });
+  return `<?xml version="1.0" encoding="utf-8"?>
+<Status xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}" Icon="1" Duration="5" Tick="1">
+  <!-- creidhne:meta ${meta} -->
+</Status>`;
+};
 
 export const statusXml = (name: string): string =>
   `<?xml version="1.0" encoding="utf-8"?>

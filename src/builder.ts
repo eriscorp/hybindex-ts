@@ -43,6 +43,31 @@ const archivedKey = (type: IndexType): string =>
 
 const namesByFilenameKey = (type: IndexType): string => `${type}NamesByFilename`;
 
+/**
+ * Extract the `<!-- creidhne:meta {...} -->` comment payload as a raw object.
+ * Returns null when the comment is missing or malformed. Regex-based so we
+ * don't have to parse the full XML just to read the annotation.
+ */
+function readCreidhneMeta(content: string): Record<string, unknown> | null {
+  const m = /<!--\s*creidhne:meta\s+({.*?})\s*-->/.exec(content);
+  if (!m || !m[1]) return null;
+  try {
+    return JSON.parse(m[1]) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function addReverseRef(
+  map: Record<string, string[]>,
+  formulaName: unknown,
+  entityName: string,
+): void {
+  if (typeof formulaName !== 'string' || !formulaName) return;
+  if (!map[formulaName]) map[formulaName] = [];
+  if (!map[formulaName].includes(entityName)) map[formulaName].push(entityName);
+}
+
 // ── File utilities ──────────────────────────────────────────────────────────
 
 async function walkDir(
@@ -131,6 +156,8 @@ export async function buildSection(
   const itemVendors: Record<string, string[]> = {};
   const itemLootSets: Record<string, string[]> = {};
   const mapDetails: MapDetail[] = [];
+  const formulaUsedByCastables: Record<string, string[]> = {};
+  const formulaUsedByStatuses: Record<string, string[]> = {};
 
   let entries: Dirent[] = [];
   try {
@@ -166,6 +193,12 @@ export async function buildSection(
                 if (!statusCasters[key].includes(name)) statusCasters[key].push(name);
               }
             }
+          }
+          // Formula reverse index — extract named formula references from meta.
+          const meta = readCreidhneMeta(content);
+          if (meta) {
+            addReverseRef(formulaUsedByCastables, meta.healFormulaName, name);
+            addReverseRef(formulaUsedByCastables, meta.damageFormulaName, name);
           }
         }
       }
@@ -237,6 +270,22 @@ export async function buildSection(
       if (match && match[1]) {
         const name = match[1].trim();
         if (name && !names.includes(name)) recordName(name);
+        // Statuses encode formula references under meta.formulaNames per block
+        // (onApply/onTick/onRemove × heal/damage). Extract and reverse-index.
+        if (type === 'statuses' && name) {
+          const meta = readCreidhneMeta(content);
+          const fnByBlock = meta && typeof meta.formulaNames === 'object' ? meta.formulaNames as Record<string, unknown> : null;
+          if (fnByBlock) {
+            for (const block of ['onApply', 'onTick', 'onRemove']) {
+              const fn = fnByBlock[block];
+              if (fn && typeof fn === 'object') {
+                const entries = fn as Record<string, unknown>;
+                addReverseRef(formulaUsedByStatuses, entries.heal, name);
+                addReverseRef(formulaUsedByStatuses, entries.damage, name);
+              }
+            }
+          }
+        }
       }
     } else if (type === 'npcs') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
@@ -338,6 +387,7 @@ export async function buildSection(
   if (type === 'castables') {
     fields.castableClasses = castableClasses;
     fields.statusCasters = statusCasters;
+    fields.formulaUsedByCastables = formulaUsedByCastables;
     // name → filename map (inverse of namesByFilename, kept for backward compat)
     const castableFilenames: Record<string, string> = {};
     for (const [fname, n] of Object.entries(namesByFilename)) {
@@ -348,6 +398,7 @@ export async function buildSection(
     fields.castableFilenames = castableFilenames;
     Object.assign(fields, await scanCategoryContext(libraryPath, 'castables'));
   } else if (type === 'statuses') {
+    fields.formulaUsedByStatuses = formulaUsedByStatuses;
     Object.assign(fields, await scanCategoryContext(libraryPath, 'statuses'));
   } else if (type === 'items') {
     Object.assign(fields, await scanCategoryContext(libraryPath, 'items'));
@@ -553,6 +604,7 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     serverconfigsNamesByFilename: {}, worldmapsNamesByFilename: {},
     castableFilenames: {}, castableClasses: {}, statusCasters: {},
     castableTrainers: {}, itemVendors: {}, itemLootSets: {},
+    formulaUsedByCastables: {}, formulaUsedByStatuses: {},
     npcResponseCalls: {}, npcStringKeys: [],
     creatureTypes: [], elementnames: [], scripts: [], cookieNames: [],
     vendorTabs: [], npcJobs: [], creatureFamilies: [],

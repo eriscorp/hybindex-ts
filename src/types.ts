@@ -121,6 +121,12 @@ export interface WorldIndex {
   // Loot cross-reference
   itemLootSets: Record<string, string[]>; // item name (lowercased) → loot sets referencing it
 
+  // Formula reverse index — extracted from the `<!-- creidhne:meta -->`
+  // annotation on castable/status XML. Maps formula name → entity names that
+  // reference it. Populated alongside castable/status scans respectively.
+  formulaUsedByCastables: Record<string, string[]>;
+  formulaUsedByStatuses: Record<string, string[]>;
+
   // Localization cross-references
   npcResponseCalls: Record<string, string>; // Call attribute → response text
   npcStringKeys: NpcStringKey[];
