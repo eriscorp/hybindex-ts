@@ -141,3 +141,17 @@ export const mapXml = (name: string, id: number, x: number, y: number): string =
 <Map xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Id="${id}" X="${x}" Y="${y}">
   <Name>${name}</Name>
 </Map>`;
+
+export const lootSetXml = (name: string, items: string[] = []): string => {
+  const itemTags = items.map((n) => `    <Item>${n}</Item>`).join('\n');
+  return `<?xml version="1.0" encoding="utf-8"?>
+<LootSet xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}">
+  <Items>
+${itemTags}
+  </Items>
+</LootSet>`;
+};
+
+export const serverConfigXml = (name: string): string =>
+  `<?xml version="1.0" encoding="utf-8"?>
+<ServerConfig xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}"/>`;

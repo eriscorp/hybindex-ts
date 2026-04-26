@@ -7,9 +7,11 @@ import {
   creatureXml,
   itemXml,
   localizationXml,
+  lootSetXml,
   makeWorldTemp,
   mapXml,
   npcXml,
+  serverConfigXml,
   statusXml,
   statusXmlWithMeta,
   writeArchivedXml,
@@ -270,5 +272,56 @@ describe('buildSection', () => {
     await writeArchivedXml(libraryPath, 'statuses', 'old.xml', statusXml('Old Status'));
     const { fields } = await buildSection(libraryPath, 'statuses');
     expect(fields.archivedStatuses).toEqual(['Old Status']);
+  });
+
+  it('emits a terminal done event keyed by type', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('A'));
+    const events: string[] = [];
+    await buildSection(libraryPath, 'castables', {
+      onProgress: (e) => events.push(`${e.phase}:${e.type ?? '-'}`),
+    });
+    expect(events.at(-1)).toBe('done:castables');
+  });
+});
+
+// ── Loot set cross-references ──────────────────────────────────────────────
+
+describe('itemLootSets', () => {
+  it('reverse-indexes <Item> entries inside <Items> blocks of loot sets', async () => {
+    await writeXml(libraryPath, 'lootsets', 'forest.xml', lootSetXml('forest', ['Apple', 'Stick']));
+    await writeXml(libraryPath, 'lootsets', 'cave.xml', lootSetXml('cave', ['Apple']));
+
+    const index = await buildIndex(libraryPath);
+
+    // Keys are lowercased (matches existing itemVendors / castableTrainers convention).
+    const sorted = Object.fromEntries(
+      Object.entries(index.itemLootSets).map(([k, v]) => [k, [...v].sort()]),
+    );
+    expect(sorted).toEqual({
+      apple: ['cave', 'forest'],
+      stick: ['forest'],
+    });
+  });
+
+  it('is empty when no loot sets reference items', async () => {
+    await writeXml(libraryPath, 'lootsets', 'empty.xml', lootSetXml('empty', []));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemLootSets).toEqual({});
+  });
+});
+
+// ── Archive scans for serverconfigs / localizations ────────────────────────
+
+describe('archive scans for serverconfigs and localizations', () => {
+  it('scans .ignore/ XML for serverconfigs by Name attribute', async () => {
+    await writeArchivedXml(libraryPath, 'serverconfigs', 'old.xml', serverConfigXml('OldConfig'));
+    const index = await buildIndex(libraryPath);
+    expect(index.archivedServerconfigs).toEqual(['OldConfig']);
+  });
+
+  it('scans .ignore/ XML for localizations by Locale attribute', async () => {
+    await writeArchivedXml(libraryPath, 'localizations', 'old.xml', localizationXml('de_DE'));
+    const index = await buildIndex(libraryPath);
+    expect(index.archivedLocalizations).toEqual(['de_DE']);
   });
 });

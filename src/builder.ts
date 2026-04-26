@@ -29,10 +29,12 @@ const ARCHIVED_NAME_REGEX: Partial<Record<IndexType, RegExp>> = {
   creaturebehaviorsets: /\bName="([^"]+)"/,
   elementtables: /\bName="([^"]+)"/,
   items: /<Name>([^<]+)<\/Name>/,
+  localizations: /\bLocale="([^"]+)"/,
   lootsets: /\bName="([^"]+)"/,
   nations: /<Name>([^<]+)<\/Name>/,
   npcs: /<Name>([^<]+)<\/Name>/,
   recipes: /<Name>([^<]+)<\/Name>/,
+  serverconfigs: /\bName="([^"]+)"/,
   spawngroups: /\bName="([^"]+)"/,
   statuses: /\bName="([^"]+)"/,
   variantgroups: /<Name>([^<]+)<\/Name>/,
@@ -301,6 +303,24 @@ export async function buildSection(
             }
           }
         }
+        // Lootsets: every <Item> inside an <Items> block is reverse-indexed
+        // so the items editor can show "appears in loot set X".
+        if (type === 'lootsets' && name) {
+          const itemsBlockRegex = /<Items[^>]*>([\s\S]*?)<\/Items>/g;
+          let ib;
+          while ((ib = itemsBlockRegex.exec(content)) !== null) {
+            const body = ib[1] ?? '';
+            const itemRegex = /<Item[^>]*>([^<]+)<\/Item>/g;
+            let im;
+            while ((im = itemRegex.exec(body)) !== null) {
+              const key = (im[1] ?? '').trim().toLowerCase();
+              if (key) {
+                if (!itemLootSets[key]) itemLootSets[key] = [];
+                if (!itemLootSets[key].includes(name)) itemLootSets[key].push(name);
+              }
+            }
+          }
+        }
       }
     } else if (type === 'npcs') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
@@ -339,28 +359,6 @@ export async function buildSection(
       if (nameMatch && nameMatch[1]) {
         const name = nameMatch[1].trim();
         if (name && !names.includes(name)) recordName(name);
-      }
-    } else if (type === 'lootsets') {
-      // lootsets is also caught by attrName above, but duplicate cross-ref wiring
-      // here in case ATTR_NAME_MAP changes. itemLootSets collector is dead in
-      // the existing Creidhne logic (attrName branch runs first); preserve
-      // parity for now, flag for fix.
-      const itemsBlockRegex = /<Items[^>]*>([\s\S]*?)<\/Items>/g;
-      let ib;
-      const lootSetName = namesByFilename[file.name] ?? '';
-      if (lootSetName) {
-        while ((ib = itemsBlockRegex.exec(content)) !== null) {
-          const body = ib[1] ?? '';
-          const itemRegex = /<Item[^>]*>([^<]+)<\/Item>/g;
-          let im;
-          while ((im = itemRegex.exec(body)) !== null) {
-            const key = (im[1] ?? '').trim().toLowerCase();
-            if (key) {
-              if (!itemLootSets[key]) itemLootSets[key] = [];
-              if (!itemLootSets[key].includes(lootSetName)) itemLootSets[key].push(lootSetName);
-            }
-          }
-        }
       }
     } else {
       // nations, items, recipes — use all <Name> child elements; first one is
@@ -462,6 +460,7 @@ export async function buildSection(
     fields.ignoredMapDetails = await scanIgnoredMapDetails(libraryPath);
   }
 
+  onProgress?.({ phase: 'done', type });
   return { type, fields };
 }
 
@@ -632,8 +631,9 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     localizations: [], lootsets: [], maps: [], nations: [], npcs: [], recipes: [],
     serverconfigs: [], spawngroups: [], statuses: [], variantgroups: [], worldmaps: [],
     archivedCastables: [], archivedCreatures: [], archivedCreaturebehaviorsets: [],
-    archivedElementtables: [], archivedItems: [], archivedLootsets: [], archivedNations: [],
-    archivedNpcs: [], archivedRecipes: [], archivedSpawngroups: [], archivedStatuses: [],
+    archivedElementtables: [], archivedItems: [], archivedLocalizations: [],
+    archivedLootsets: [], archivedNations: [], archivedNpcs: [], archivedRecipes: [],
+    archivedServerconfigs: [], archivedSpawngroups: [], archivedStatuses: [],
     archivedVariantgroups: [],
     castablesNamesByFilename: {}, statusesNamesByFilename: {}, itemsNamesByFilename: {},
     creaturesNamesByFilename: {}, npcsNamesByFilename: {}, nationsNamesByFilename: {},

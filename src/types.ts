@@ -84,10 +84,12 @@ export interface WorldIndex {
   archivedCreaturebehaviorsets: string[];
   archivedElementtables: string[];
   archivedItems: string[];
+  archivedLocalizations: string[];
   archivedLootsets: string[];
   archivedNations: string[];
   archivedNpcs: string[];
   archivedRecipes: string[];
+  archivedServerconfigs: string[];
   archivedSpawngroups: string[];
   archivedStatuses: string[];
   archivedVariantgroups: string[];

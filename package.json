@@ -1,6 +1,6 @@
 {
   "name": "@eriscorp/hybindex-ts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "World index builder for Hybrasyl XML libraries — shared between Creidhne and Taliesin",
   "type": "module",
   "exports": {

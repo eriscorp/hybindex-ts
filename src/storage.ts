@@ -79,6 +79,7 @@ const FIELD_TO_FILE: Record<string, string> = {
 
   // localizations
   localizations: 'localizations',
+  archivedLocalizations: 'localizations',
   localizationsNamesByFilename: 'localizations',
   npcResponseCalls: 'localizations',
   npcStringKeys: 'localizations',
@@ -101,6 +102,7 @@ const FIELD_TO_FILE: Record<string, string> = {
 
   // serverconfigs
   serverconfigs: 'serverconfigs',
+  archivedServerconfigs: 'serverconfigs',
   serverconfigsNamesByFilename: 'serverconfigs',
 
   // maps
