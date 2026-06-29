@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildIndex, buildSection } from '../src/index.js';
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { buildIndex, buildSection, saveIndex } from '../src/index.js';
 import {
   castableXml,
   castableXmlWithRequirement,
@@ -21,15 +24,20 @@ import {
 
 let libraryPath: string;
 let root: string;
+let cacheDir: string;
 
 beforeEach(async () => {
+  cacheDir = await fs.mkdtemp(join(tmpdir(), 'hybindex-cache-'));
+  process.env.HYBINDEX_CACHE_DIR = cacheDir;
   const t = await makeWorldTemp();
   libraryPath = t.libraryPath;
   root = t.root;
 });
 
 afterEach(async () => {
+  delete process.env.HYBINDEX_CACHE_DIR;
   await cleanup(root);
+  await fs.rm(cacheDir, { recursive: true, force: true });
 });
 
 // ── buildIndex ──────────────────────────────────────────────────────────────
@@ -323,5 +331,67 @@ describe('archive scans for serverconfigs and localizations', () => {
     await writeArchivedXml(libraryPath, 'localizations', 'old.xml', localizationXml('de_DE'));
     const index = await buildIndex(libraryPath);
     expect(index.archivedLocalizations).toEqual(['de_DE']);
+  });
+});
+
+// ── Incremental rebuilds (A5) ───────────────────────────────────────────────
+
+describe('incremental buildIndex', () => {
+  // A field-by-field comparison ignoring builtAt (timestamp) and __fileCache.
+  const sameIndex = (a: Record<string, unknown>, b: Record<string, unknown>): void => {
+    const strip = (x: Record<string, unknown>): Record<string, unknown> => {
+      const { builtAt, __fileCache, ...rest } = x as Record<string, unknown>;
+      void builtAt; void __fileCache;
+      return rest;
+    };
+    expect(strip(a)).toEqual(strip(b));
+  };
+
+  it('a no-change rebuild reproduces the same index', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    await writeXml(libraryPath, 'items', 'sword.xml', itemXml('Sword', { shopTab: 'Weapons', category: 'Blades' }));
+    await writeXml(libraryPath, 'statuses', 'poison.xml', statusXml('Poisoned'));
+
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+
+    const second = await buildIndex(libraryPath);
+    sameIndex(first as unknown as Record<string, unknown>, second as unknown as Record<string, unknown>);
+  });
+
+  it('reuses unchanged sections and picks up a changed one', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    await writeXml(libraryPath, 'items', 'sword.xml', itemXml('Sword'));
+
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+
+    // Change only castables.
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXml('Beag Sal'));
+    const second = await buildIndex(libraryPath);
+
+    expect(second.castables).toEqual(['Ard Sal', 'Beag Sal']);
+    expect(second.items).toEqual(['Sword']); // unchanged section, reused
+  });
+
+  it('rescans a section when a file is deleted', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXml('Beag Sal'));
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+
+    await fs.unlink(join(libraryPath, 'castables', 'b.xml'));
+    const second = await buildIndex(libraryPath);
+    expect(second.castables).toEqual(['Ard Sal']);
+  });
+
+  it('folded category/vendor aggregates match a from-scratch build', async () => {
+    await writeXml(libraryPath, 'items', 's.xml', itemXml('Sword', { shopTab: 'Weapons', category: 'Blades' }));
+    await writeXml(libraryPath, 'items', 'p.xml', itemXml('Potion', { shopTab: 'Consumables', category: 'Drinks' }));
+
+    const built = await buildIndex(libraryPath);
+    expect(built.vendorTabs).toEqual(['Consumables', 'Weapons']);
+    expect(built.itemCategories).toEqual(['Blades', 'Drinks']);
+    expect(built.itemCategoryDetails.map((c) => c.name)).toEqual(['Blades', 'Drinks']);
   });
 });

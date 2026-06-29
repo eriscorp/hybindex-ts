@@ -1,9 +1,20 @@
 import { promises as fs } from 'fs';
 import type { IndexType, WorldIndex } from './types.js';
 import { INDEX_TYPES } from './types.js';
-import { getCreidhneDir, getIndexFilePath, getLegacyIndexPath } from './paths.js';
-
-const SCHEMA_VERSION = 1;
+import {
+  SCHEMA_VERSION,
+  getIndexDir,
+  getIndexFilePath,
+  getInWorldIndexFilePath,
+  getLegacyIndexPath,
+} from './paths.js';
+import {
+  computeFileCache,
+  fileCacheEqual,
+  loadFileCache,
+  writeFileCache,
+  type FileCache,
+} from './filecache.js';
 
 /**
  * Which per-type file owns each WorldIndex field. Fields not in this map live
@@ -129,10 +140,19 @@ const INDEX_FILES: readonly string[] = [
   'worldmaps',
 ];
 
+/** Keys not part of the persisted index (computed scaffolding). */
+const NON_PERSISTED_KEYS = new Set(['__fileCache']);
+
+/** WorldIndex field keys owned by a given type's per-type file. */
+export function fieldsForType(type: IndexType): string[] {
+  return Object.keys(FIELD_TO_FILE).filter((key) => FIELD_TO_FILE[key] === type);
+}
+
 /** Group fields by their owning file. */
 function splitByFile(index: WorldIndex): Record<string, Record<string, unknown>> {
   const groups: Record<string, Record<string, unknown>> = {};
   for (const key of Object.keys(index)) {
+    if (NON_PERSISTED_KEYS.has(key)) continue;
     const file = FIELD_TO_FILE[key] ?? '_meta';
     if (!groups[file]) groups[file] = {};
     groups[file][key] = (index as unknown as Record<string, unknown>)[key];
@@ -155,59 +175,33 @@ async function writeJson(filePath: string, data: unknown): Promise<void> {
   await writeAtomic(filePath, JSON.stringify(data, null, 2));
 }
 
-// ── Legacy migration ────────────────────────────────────────────────────────
-
-async function readLegacyIndex(libraryPath: string): Promise<WorldIndex | null> {
-  try {
-    const raw = await fs.readFile(getLegacyIndexPath(libraryPath), 'utf-8');
-    return JSON.parse(raw) as WorldIndex;
-  } catch {
-    return null;
-  }
-}
-
-async function deleteLegacyIndex(libraryPath: string): Promise<void> {
-  try {
-    await fs.unlink(getLegacyIndexPath(libraryPath));
-  } catch { /* already gone */ }
-}
+// ── In-world cleanup (pre-0.3.0 → 0.3.0 relocation) ──────────────────────────
 
 /**
- * Migrate a legacy `index.json` into the per-type layout and delete the
- * legacy file. Idempotent: if the new layout already exists with fresh data,
- * no migration happens. Returns the migrated index, or null if no legacy
- * index existed.
+ * Best-effort removal of the stale pre-0.3.0 index that lived in the git-tracked
+ * `world/.creidhne/`. Deletes only files this package owns — the legacy single
+ * `index.json`, every per-type `*.json`, `_meta.json`, and any `_filecache.json`
+ * — leaving authoritative `constants.json` / `formulas.json` untouched. Idempotent.
  */
-async function migrateLegacyIfNeeded(libraryPath: string): Promise<WorldIndex | null> {
-  // Skip migration if the new layout already has a _meta.json
-  const metaPath = getIndexFilePath(libraryPath, '_meta');
-  try {
-    await fs.access(metaPath);
-    // New layout exists. If legacy still sits beside it, remove it.
-    await deleteLegacyIndex(libraryPath);
-    return null;
-  } catch { /* fall through */ }
-
-  const legacy = await readLegacyIndex(libraryPath);
-  if (!legacy) return null;
-
-  await saveIndex(libraryPath, legacy);
-  await deleteLegacyIndex(libraryPath);
-  return legacy;
+export async function cleanupInWorldIndex(libraryPath: string): Promise<void> {
+  const names = [...INDEX_FILES, '_filecache'];
+  await Promise.all([
+    fs.unlink(getLegacyIndexPath(libraryPath)).catch(() => { /* gone */ }),
+    ...names.map((name) =>
+      fs.unlink(getInWorldIndexFilePath(libraryPath, name)).catch(() => { /* gone */ }),
+    ),
+  ]);
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Load the world index. If a legacy `index.json` is present and no per-type
- * layout exists yet, migrates silently and deletes the legacy file.
- * Returns null when neither layout exists.
+ * Load the world index from the local cache. Returns null when no cache exists
+ * (e.g. a fresh clone, or first run after the 0.3.0 relocation) — callers
+ * (re)build in that case. The index is derived and rebuildable, so there is no
+ * migration of the old in-world copy: it is cleaned up on the next save.
  */
 export async function loadIndex(libraryPath: string): Promise<WorldIndex | null> {
-  const migrated = await migrateLegacyIfNeeded(libraryPath);
-  if (migrated) return migrated;
-
-  // Read each file in the new layout, merge.
   const merged: Record<string, unknown> = {};
   let anyFound = false;
   for (const fileName of INDEX_FILES) {
@@ -224,13 +218,25 @@ export async function loadIndex(libraryPath: string): Promise<WorldIndex | null>
   return anyFound ? (merged as unknown as WorldIndex) : null;
 }
 
-/** Save the full world index, splitting by field-to-file mapping. */
+/**
+ * Save the full world index to the local cache, splitting by field-to-file
+ * mapping. Also persists the `_filecache.json` build signature (for incremental
+ * rebuilds) and clears any stale pre-0.3.0 index from the world folder.
+ */
 export async function saveIndex(libraryPath: string, index: WorldIndex): Promise<void> {
-  await fs.mkdir(getCreidhneDir(libraryPath), { recursive: true });
+  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
   const groups = splitByFile(index);
   for (const [fileName, data] of Object.entries(groups)) {
     await writeJson(getIndexFilePath(libraryPath, fileName), data);
   }
+  // Persist the build signature — prefer the one computed during buildIndex,
+  // else compute fresh so the cache reflects on-disk state at save time.
+  const fileCache =
+    ((index as unknown as Record<string, unknown>).__fileCache as FileCache | undefined) ??
+    (await computeFileCache(libraryPath));
+  await writeFileCache(libraryPath, fileCache);
+  // Index has moved out of the git world folder — remove the old copy.
+  await cleanupInWorldIndex(libraryPath);
 }
 
 /**
@@ -247,7 +253,7 @@ export async function saveSection(
   type: IndexType,
   fields: Record<string, unknown>,
 ): Promise<void> {
-  await fs.mkdir(getCreidhneDir(libraryPath), { recursive: true });
+  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
   // Group the fields by owning file — a single section may touch more than
   // its own file (e.g. items owns items.json fields plus vendorTabs there).
   // Since FIELD_TO_FILE encodes the ownership, reuse it.
@@ -278,41 +284,53 @@ export async function saveSection(
   } catch { /* no prior meta */ }
   meta.builtAt = new Date().toISOString();
   await writeJson(metaPath, meta);
+
+  // Refresh the build signature for just this section so a subsequent
+  // buildIndex sees it as up to date. Other sections keep their prior entries.
+  const prior = (await loadFileCache(libraryPath)) ?? {};
+  const fresh = await computeFileCache(libraryPath);
+  const sig = fresh[type];
+  if (sig) prior[type] = sig;
+  await writeFileCache(libraryPath, prior);
 }
 
 /**
- * Remove all index files (legacy + new layout). Leaves other `.creidhne/`
- * files (constants.json, formulas.json) alone — only files owned by this
- * package are deleted.
+ * Remove all index files from the local cache (and any stale in-world copy).
+ * Authoritative constants.json / formulas.json in the world folder are untouched.
  */
 export async function deleteIndex(libraryPath: string): Promise<void> {
-  await deleteLegacyIndex(libraryPath);
-  await Promise.all(
-    INDEX_FILES.map((name) =>
+  await Promise.all([
+    ...INDEX_FILES.map((name) =>
       fs.unlink(getIndexFilePath(libraryPath, name)).catch(() => { /* ignore */ }),
     ),
-  );
+    fs.unlink(getIndexFilePath(libraryPath, '_filecache')).catch(() => { /* ignore */ }),
+  ]);
+  await cleanupInWorldIndex(libraryPath);
 }
 
-/** Report whether any index data exists for this library. */
+/**
+ * Report whether a cached index exists and whether it is stale (the world's
+ * files no longer match the build signature). `stale` drives auto-rebuild on
+ * load. A missing cache reports `exists: false` (callers treat that as "build").
+ */
 export async function getIndexStatus(
   libraryPath: string,
-): Promise<{ exists: boolean; builtAt?: string }> {
-  // Try new layout first
+): Promise<{ exists: boolean; builtAt?: string; stale?: boolean }> {
+  let builtAt: string | undefined;
   try {
     const raw = await fs.readFile(getIndexFilePath(libraryPath, '_meta'), 'utf-8');
     const parsed = JSON.parse(raw) as { builtAt?: string };
-    return { exists: true, ...(parsed.builtAt ? { builtAt: parsed.builtAt } : {}) };
-  } catch { /* try legacy */ }
-  try {
-    const raw = await fs.readFile(getLegacyIndexPath(libraryPath), 'utf-8');
-    const parsed = JSON.parse(raw) as { builtAt?: string };
-    return { exists: true, ...(parsed.builtAt ? { builtAt: parsed.builtAt } : {}) };
-  } catch { /* no index */ }
-  return { exists: false };
+    builtAt = parsed.builtAt;
+  } catch {
+    return { exists: false };
+  }
+  const prior = await loadFileCache(libraryPath);
+  const current = await computeFileCache(libraryPath);
+  const stale = !fileCacheEqual(prior, current);
+  return { exists: true, stale, ...(builtAt ? { builtAt } : {}) };
 }
 
-/** Ensure the .creidhne directory exists (callers rarely need this directly). */
+/** Ensure the local cache directory for this library exists. */
 export async function ensureCreidhneDir(libraryPath: string): Promise<void> {
-  await fs.mkdir(getCreidhneDir(libraryPath), { recursive: true });
+  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
 }

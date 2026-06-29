@@ -24,12 +24,20 @@ export {
   deleteIndex,
   getIndexStatus,
   ensureCreidhneDir,
+  cleanupInWorldIndex,
+  fieldsForType,
 } from './storage.js';
 
 export {
-  getCreidhneDir,
+  SCHEMA_VERSION,
+  resolveCacheBase,
+  worldKey,
+  getIndexDir,
   getIndexFilePath,
+  getFileCachePath,
+  getCreidhneDir,
   getLegacyIndexPath,
+  getInWorldIndexFilePath,
 } from './paths.js';
 
 export type {

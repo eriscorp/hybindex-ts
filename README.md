@@ -6,29 +6,30 @@ World index builder for Hybrasyl XML libraries. Shared between [Creidhne](https:
 
 Scans a `world/xml/` directory tree and produces a `WorldIndex` — a JSON shape describing every XML entity in the library, plus cross-references (status → castables that apply it, item → NPCs that vendor it, etc.), category lists, map coordinates, Lua script cookies, and more.
 
-On disk the index is stored as per-type files inside `world/.creidhne/`, flat alongside the existing `constants.json` / `formulas.json`:
+The index is a **rebuildable, per-machine cache** — derived data, not source — so it lives in local app storage outside the (git-tracked) world folder. The authoritative `constants.json` / `formulas.json` stay in `world/.creidhne/`; only this package's index files moved out:
 
 ```
-.creidhne/
-├── constants.json          # (owned by Creidhne, not this package)
-├── formulas.json           # (owned by Creidhne, not this package)
+<cacheBase>/v<SCHEMA_VERSION>/<worldKey>/
 ├── _meta.json              # schema version + builtAt + scripts + cookieNames
 ├── castables.json          # castables list + filename map + cross-refs
 ├── items.json
 ├── statuses.json
 ├── npcs.json
 ├── …                       # one file per INDEX_TYPES entry
+├── _filecache.json         # per-section build signature (incremental rebuilds)
 ```
 
-Legacy single-file `index.json` is migrated silently on first load and deleted.
+- `cacheBase` is `%LOCALAPPDATA%\Erisco\hybindex` on Windows, `~/.config/erisco/hybindex` elsewhere. Set `HYBINDEX_CACHE_DIR` to override it (used by tests).
+- `<worldKey>` is `<worldName>-<sha1(absolutePath)>`, so two libraries that share a folder name never collide. Both Creidhne and Taliesin resolve the same base, so one cache serves both.
+- Builds are **incremental**: `_filecache.json` records a cheap stat-only signature per section, so a no-change rebuild is `O(stat)` and editing one type rescans only that type.
+
+Pre-0.3.0 the index lived in-world under `world/.creidhne/`. There is no migration of that derived data — it is simply cleaned up (`cleanupInWorldIndex`) the next time the index is saved.
 
 ## Install
 
 ```sh
 npm install @eriscorp/hybindex-ts
 ```
-
-(Currently consumed as `file:../hybindex-ts` by Creidhne + Taliesin until formally published.)
 
 ## Usage
 
@@ -53,7 +54,7 @@ await saveIndex('/path/to/world/xml', index);
 const { fields } = await buildSection('/path/to/world/xml', 'castables');
 await saveSection('/path/to/world/xml', 'castables', fields);
 
-// Read whatever's on disk (migrates legacy index.json if needed)
+// Read the cached index (null if none has been built yet)
 const loaded = await loadIndex('/path/to/world/xml');
 ```
 
@@ -76,11 +77,12 @@ interface ProgressEvent {
 |---|---|
 | `buildIndex(libraryPath, options?)` | Scan everything, return full `WorldIndex`. |
 | `buildSection(libraryPath, type, options?)` | Scan a single type; returns `{ type, fields }` where `fields` is the subset of `WorldIndex` owned by that type. |
-| `loadIndex(libraryPath)` | Read index from disk, migrate legacy if present, return `WorldIndex` or `null`. |
-| `saveIndex(libraryPath, index)` | Write the full index as per-type files (atomic renames). |
-| `saveSection(libraryPath, type, fields)` | Write only the specified section's fields, bump `_meta.builtAt`. |
-| `deleteIndex(libraryPath)` | Remove all index files (legacy + per-type). Leaves other `.creidhne/` files (constants, formulas) alone. |
-| `getIndexStatus(libraryPath)` | `{ exists, builtAt? }` — works with either layout. |
+| `loadIndex(libraryPath)` | Read the cached index, return `WorldIndex` or `null` (no cache yet). |
+| `saveIndex(libraryPath, index)` | Write the full index as per-type files (atomic renames) + `_filecache.json`; cleans up any stale in-world copy. |
+| `saveSection(libraryPath, type, fields)` | Write only the specified section's fields, bump `_meta.builtAt`, refresh that section's signature. |
+| `deleteIndex(libraryPath)` | Remove all cached index files (and any stale in-world copy). Authoritative `constants.json` / `formulas.json` are untouched. |
+| `getIndexStatus(libraryPath)` | `{ exists, builtAt?, stale? }` — `stale` is true when the world's files no longer match the build signature. |
+| `cleanupInWorldIndex(libraryPath)` | Remove the pre-0.3.0 in-world index files. Idempotent; called automatically by `saveIndex`. |
 
 ## Development
 

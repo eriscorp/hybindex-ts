@@ -9,6 +9,82 @@ import type {
   WorldIndex,
 } from './types.js';
 import { INDEX_TYPES } from './types.js';
+import { fieldsForType } from './storage.js';
+import { loadIndex } from './storage.js';
+import {
+  SCRIPTS_KEY,
+  computeFileCache,
+  loadFileCache,
+  sectionSigEqual,
+  type FileCache,
+} from './filecache.js';
+
+/** Max concurrent file reads per section scan (I/O parallelism). */
+const READ_CONCURRENCY = 16;
+
+/**
+ * Read every file in `dir` named by `filenames` concurrently (bounded pool),
+ * returning contents in the SAME order as `filenames`. Order preservation is
+ * required: several accumulators (statusCasters, itemVendors, npcStringKeys,
+ * formulaUsedBy*, category usedBy) append in file order and are not re-sorted,
+ * so parsing must happen in the original readdir order even though reads finish
+ * out of order. Unreadable files yield `null` and are skipped by the caller.
+ */
+async function readAllInOrder(dir: string, filenames: string[]): Promise<(string | null)[]> {
+  const results = new Array<string | null>(filenames.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= filenames.length) return;
+      try {
+        results[i] = await fs.readFile(join(dir, filenames[i]!), 'utf-8');
+      } catch {
+        results[i] = null;
+      }
+    }
+  };
+  const poolSize = Math.min(READ_CONCURRENCY, filenames.length);
+  await Promise.all(Array.from({ length: poolSize }, worker));
+  return results;
+}
+
+/**
+ * Accumulate <Categories> usage from one file's content into `catMap`. Mirrors
+ * the former standalone scanCategoryDetails so output stays identical — but runs
+ * inside the single read pass instead of re-reading every file.
+ */
+function accumulateCategories(
+  content: string,
+  fallbackName: string,
+  catMap: Record<string, { count: number; usedBy: string[] }>,
+): void {
+  const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content) || /\bName="([^"]+)"/.exec(content);
+  const itemName = nameMatch && nameMatch[1] ? nameMatch[1].trim() : fallbackName;
+  const catSection = /<Categories[^>]*>([\s\S]*?)<\/Categories>/.exec(content);
+  if (!catSection || !catSection[1]) return;
+  const body = catSection[1];
+  const record = (c: string): void => {
+    if (!c) return;
+    if (!catMap[c]) catMap[c] = { count: 0, usedBy: [] };
+    catMap[c].count++;
+    if (catMap[c].usedBy.length < 5) catMap[c].usedBy.push(itemName);
+  };
+  const catElemRegex = /<Category\b[^>]*>([^<]+)<\/Category>/g;
+  const catAttrRegex = /<Category\b[^>]*\bName="([^"]+)"/g;
+  let m;
+  while ((m = catElemRegex.exec(body)) !== null) record((m[1] ?? '').trim());
+  while ((m = catAttrRegex.exec(body)) !== null) record((m[1] ?? '').trim());
+}
+
+/** Build the sorted CategoryDetail[] from an accumulated category map. */
+function categoryDetailsFrom(
+  catMap: Record<string, { count: number; usedBy: string[] }>,
+): CategoryDetail[] {
+  return Object.entries(catMap)
+    .map(([name, { count, usedBy }]) => ({ name, count, usedBy: count < 5 ? usedBy : [] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /** Types whose identifier is an XML attribute on the root element. */
 const ATTR_NAME_MAP: Partial<Record<IndexType, string>> = {
@@ -145,8 +221,18 @@ export async function buildSection(
   const { onProgress } = options;
   const dirPath = join(libraryPath, type);
   const names: string[] = [];
+  const nameSet = new Set<string>();
   const namesByFilename: Record<string, string> = {};
   const attrName = ATTR_NAME_MAP[type];
+  // Hoisted out of the per-file loop (was rebuilt per file before).
+  const attrNameRegex = attrName ? new RegExp(`\\b${attrName}="([^"]+)"`) : null;
+  const localizationSections: [string, RegExp][] = [
+    ['Common', /<Common>[\s\S]*?<\/Common>/],
+    ['Merchant', /<Merchant>[\s\S]*?<\/Merchant>/],
+    ['Monster', /<MonsterSpeak>[\s\S]*?<\/MonsterSpeak>/],
+  ];
+  const shopTabRegex = /\bShopTab="([^"]+)"/g;
+  const elementRegex = /<Source[^>]+Element="([^"]+)"/g;
 
   // Cross-refs + aggregates this scan may populate
   const castableClasses: Record<string, string> = {};
@@ -154,6 +240,7 @@ export async function buildSection(
   const npcResponseCalls: Record<string, string> = {};
   const npcStringKeys: NpcStringKey[] = [];
   const creatureTypes: string[] = [];
+  const creatureTypesSet = new Set<string>();
   const castableTrainers: Record<string, string[]> = {};
   const itemVendors: Record<string, string[]> = {};
   const itemLootSets: Record<string, string[]> = {};
@@ -162,6 +249,17 @@ export async function buildSection(
   const formulaUsedByStatuses: Record<string, string[]> = {};
   const castableRequiredLevels: Record<string, number> = {};
   const itemWeaponDamage: Record<string, { smallMin: number; smallMax: number; largeMin: number; largeMax: number }> = {};
+  // Aggregates folded into this single read pass (formerly separate re-reads of
+  // every file): category usage, vendor tabs, element names.
+  const catMap: Record<string, { count: number; usedBy: string[] }> = {};
+  const vendorTabSet = new Set<string>();
+  const elementNameSet = new Set<string>();
+  const addName = (name: string): boolean => {
+    if (nameSet.has(name)) return false;
+    nameSet.add(name);
+    names.push(name);
+    return true;
+  };
 
   let entries: Dirent[] = [];
   try {
@@ -169,20 +267,52 @@ export async function buildSection(
   } catch { /* dir may not exist */ }
 
   const xmlEntries = entries.filter((e) => e.isFile() && e.name.endsWith('.xml'));
+  const filenames = xmlEntries.map((e) => e.name);
+  // Phase 1: read all files concurrently (bounded). Phase 2 (below) parses them
+  // in original order so order-sensitive accumulators stay deterministic.
+  const contents = await readAllInOrder(dirPath, filenames);
   let scanned = 0;
 
-  for (const file of xmlEntries) {
-    const content = await fs.readFile(join(dirPath, file.name), 'utf-8');
+  for (let fi = 0; fi < filenames.length; fi++) {
+    const fileName = filenames[fi]!;
+    const content = contents[fi];
+    if (content == null) {
+      scanned += 1;
+      onProgress?.({ phase: 'scan', type, current: scanned, total: filenames.length });
+      continue;
+    }
     const recordName = (name: string): void => {
-      if (!names.includes(name)) names.push(name);
-      namesByFilename[file.name] = name;
+      addName(name);
+      namesByFilename[fileName] = name;
     };
+
+    // Folded aggregates (run for every file of the type, matching the old
+    // standalone scans which did not dedup by name).
+    if (type === 'castables' || type === 'statuses' || type === 'items') {
+      accumulateCategories(content, fileName.replace(/\.xml$/i, ''), catMap);
+    }
+    if (type === 'items') {
+      shopTabRegex.lastIndex = 0;
+      let vt;
+      while ((vt = shopTabRegex.exec(content)) !== null) {
+        const v = (vt[1] ?? '').trim();
+        if (v) vendorTabSet.add(v);
+      }
+    }
+    if (type === 'elementtables') {
+      elementRegex.lastIndex = 0;
+      let em;
+      while ((em = elementRegex.exec(content)) !== null) {
+        const v = (em[1] ?? '').trim();
+        if (v) elementNameSet.add(v);
+      }
+    }
 
     if (type === 'castables') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
         const name = nameMatch[1].trim();
-        if (name && !names.includes(name)) {
+        if (name && !nameSet.has(name)) {
           recordName(name);
           const classMatch = /<Castable[^>]+Class="([^"]*)"/.exec(content);
           if (classMatch && classMatch[1] != null) castableClasses[name] = classMatch[1].trim();
@@ -231,12 +361,8 @@ export async function buildSection(
         const call = (callMatch[1] ?? '').trim();
         if (call) npcResponseCalls[call] = (callMatch[2] ?? '').trim();
       }
-      for (const [tag, label] of [
-        ['Common', 'Common'],
-        ['Merchant', 'Merchant'],
-        ['MonsterSpeak', 'Monster'],
-      ] as [string, string][]) {
-        const sectionMatch = new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`).exec(content);
+      for (const [label, sectionRegex] of localizationSections) {
+        const sectionMatch = sectionRegex.exec(content);
         if (!sectionMatch) continue;
         const strRegex = /<String[^>]+Key="([^"]+)"[^>]*>([^<]*)<\/String>/g;
         let sm;
@@ -252,13 +378,16 @@ export async function buildSection(
       const nameMatch = /\bName="([^"]+)"/.exec(content);
       if (nameMatch && nameMatch[1]) {
         const name = nameMatch[1].trim();
-        if (name && !names.includes(name)) recordName(name);
+        if (name && !nameSet.has(name)) recordName(name);
       }
       const typeRegex = /<Type[^>]+Name="([^"]+)"/g;
       let tm;
       while ((tm = typeRegex.exec(content)) !== null) {
         const tn = (tm[1] ?? '').trim();
-        if (tn && !creatureTypes.includes(tn)) creatureTypes.push(tn);
+        if (tn && !creatureTypesSet.has(tn)) {
+          creatureTypesSet.add(tn);
+          creatureTypes.push(tn);
+        }
       }
     } else if (type === 'maps') {
       // Maps don't need namesByFilename — mapDetails already carries filename
@@ -267,7 +396,7 @@ export async function buildSection(
       if (nameMatch && nameMatch[1]) {
         const name = nameMatch[1].trim();
         if (name) {
-          if (!names.includes(name)) names.push(name);
+          addName(name);
           const idMatch = /\bId="(\d+)"/.exec(content);
           const xMatch = /\bX="(\d+)"/.exec(content);
           const yMatch = /\bY="(\d+)"/.exec(content);
@@ -275,18 +404,18 @@ export async function buildSection(
             mapDetails.push({
               id: parseInt(idMatch[1], 10),
               name,
-              filename: file.name,
+              filename: fileName,
               x: parseInt(xMatch[1], 10),
               y: parseInt(yMatch[1], 10),
             });
           }
         }
       }
-    } else if (attrName) {
-      const match = new RegExp(`\\b${attrName}="([^"]+)"`).exec(content);
+    } else if (attrNameRegex) {
+      const match = attrNameRegex.exec(content);
       if (match && match[1]) {
         const name = match[1].trim();
-        if (name && !names.includes(name)) recordName(name);
+        if (name && !nameSet.has(name)) recordName(name);
         // Statuses encode formula references under meta.formulaNames per block
         // (onApply/onTick/onRemove × heal/damage). Extract and reverse-index.
         if (type === 'statuses' && name) {
@@ -296,9 +425,9 @@ export async function buildSection(
             for (const block of ['onApply', 'onTick', 'onRemove']) {
               const fn = fnByBlock[block];
               if (fn && typeof fn === 'object') {
-                const entries = fn as Record<string, unknown>;
-                addReverseRef(formulaUsedByStatuses, entries.heal, name);
-                addReverseRef(formulaUsedByStatuses, entries.damage, name);
+                const fnEntries = fn as Record<string, unknown>;
+                addReverseRef(formulaUsedByStatuses, fnEntries.heal, name);
+                addReverseRef(formulaUsedByStatuses, fnEntries.damage, name);
               }
             }
           }
@@ -326,7 +455,7 @@ export async function buildSection(
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
         const npcName = nameMatch[1].trim();
-        if (npcName && !names.includes(npcName)) {
+        if (npcName && !nameSet.has(npcName)) {
           recordName(npcName);
           const trainMatch = /<Train>([\s\S]*?)<\/Train>/.exec(content);
           if (trainMatch && trainMatch[1]) {
@@ -358,7 +487,7 @@ export async function buildSection(
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
         const name = nameMatch[1].trim();
-        if (name && !names.includes(name)) recordName(name);
+        if (name && !nameSet.has(name)) recordName(name);
       }
     } else {
       // nations, items, recipes — use all <Name> child elements; first one is
@@ -369,10 +498,10 @@ export async function buildSection(
       let firstName: string | null = null;
       while ((match = nameRegex.exec(content)) !== null) {
         const name = (match[1] ?? '').trim();
-        if (name && !names.includes(name)) names.push(name);
+        if (name) addName(name);
         if (name && firstName === null) firstName = name;
       }
-      if (firstName) namesByFilename[file.name] = firstName;
+      if (firstName) namesByFilename[fileName] = firstName;
 
       // Items: capture <Damage SmallMin/SmallMax/LargeMin/LargeMax/> attrs
       // when present (only weapons have it). Used by the damage calculator
@@ -398,7 +527,7 @@ export async function buildSection(
     }
 
     scanned += 1;
-    onProgress?.({ phase: 'scan', type, current: scanned, total: xmlEntries.length });
+    onProgress?.({ phase: 'scan', type, current: scanned, total: filenames.length });
   }
 
   names.sort();
@@ -412,11 +541,11 @@ export async function buildSection(
     Object.assign(namesByFilename, result.namesByFilename);
   }
 
-  // Build the field dict for this type's scan.
-  const fields: Record<string, unknown> = {
-    [type]: names,
-    [namesByFilenameKey(type)]: namesByFilename,
-  };
+  // Build the field dict for this type's scan. Maps carry their filename in
+  // mapDetails, so they have no namesByFilename map (and it is not in
+  // FIELD_TO_FILE) — emitting an empty one would desync from the reuse path.
+  const fields: Record<string, unknown> = { [type]: names };
+  if (type !== 'maps') fields[namesByFilenameKey(type)] = namesByFilename;
   if (archRegex) fields[archivedKey(type)] = archivedNames;
 
   if (type === 'castables') {
@@ -432,13 +561,19 @@ export async function buildSection(
       if (!archivedNames.includes(n)) castableFilenames[n] = fname;
     }
     fields.castableFilenames = castableFilenames;
-    Object.assign(fields, await scanCategoryContext(libraryPath, 'castables'));
+    const details = categoryDetailsFrom(catMap);
+    fields.castableCategories = details.map((c) => c.name);
+    fields.castableCategoryDetails = details;
   } else if (type === 'statuses') {
     fields.formulaUsedByStatuses = formulaUsedByStatuses;
-    Object.assign(fields, await scanCategoryContext(libraryPath, 'statuses'));
+    const details = categoryDetailsFrom(catMap);
+    fields.statusCategories = details.map((c) => c.name);
+    fields.statusCategoryDetails = details;
   } else if (type === 'items') {
-    Object.assign(fields, await scanCategoryContext(libraryPath, 'items'));
-    fields.vendorTabs = await scanVendorTabs(libraryPath);
+    const details = categoryDetailsFrom(catMap);
+    fields.itemCategories = details.map((c) => c.name);
+    fields.itemCategoryDetails = details;
+    fields.vendorTabs = [...vendorTabSet].sort();
     fields.itemWeaponDamage = itemWeaponDamage;
   } else if (type === 'creatures') {
     fields.creatureTypes = creatureTypes.sort();
@@ -453,7 +588,7 @@ export async function buildSection(
     fields.npcResponseCalls = npcResponseCalls;
     fields.npcStringKeys = npcStringKeys;
   } else if (type === 'elementtables') {
-    fields.elementnames = await scanElementNames(libraryPath);
+    fields.elementnames = [...elementNameSet].sort();
   } else if (type === 'maps') {
     mapDetails.sort((a, b) => a.id - b.id);
     fields.mapDetails = mapDetails;
@@ -465,65 +600,6 @@ export async function buildSection(
 }
 
 // ── Supporting scans ────────────────────────────────────────────────────────
-
-async function scanCategoryContext(
-  libraryPath: string,
-  type: 'castables' | 'items' | 'statuses',
-): Promise<{ [key: string]: string[] | CategoryDetail[] }> {
-  const dir = join(libraryPath, type);
-  const details = await scanCategoryDetails(dir);
-  const namesList = details.map((c) => c.name);
-  if (type === 'castables') return { castableCategories: namesList, castableCategoryDetails: details };
-  if (type === 'items') return { itemCategories: namesList, itemCategoryDetails: details };
-  return { statusCategories: namesList, statusCategoryDetails: details };
-}
-
-async function scanCategoryDetails(dir: string): Promise<CategoryDetail[]> {
-  const catMap: Record<string, { count: number; usedBy: string[] }> = {};
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const content = await fs.readFile(join(dir, entry.name), 'utf-8');
-      const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content) || /\bName="([^"]+)"/.exec(content);
-      const itemName = nameMatch && nameMatch[1] ? nameMatch[1].trim() : entry.name.replace(/\.xml$/i, '');
-      const catSection = /<Categories[^>]*>([\s\S]*?)<\/Categories>/.exec(content);
-      if (!catSection || !catSection[1]) continue;
-      const body = catSection[1];
-      const record = (c: string): void => {
-        if (!c) return;
-        if (!catMap[c]) catMap[c] = { count: 0, usedBy: [] };
-        catMap[c].count++;
-        if (catMap[c].usedBy.length < 5) catMap[c].usedBy.push(itemName);
-      };
-      const catElemRegex = /<Category\b[^>]*>([^<]+)<\/Category>/g;
-      const catAttrRegex = /<Category\b[^>]*\bName="([^"]+)"/g;
-      let m;
-      while ((m = catElemRegex.exec(body)) !== null) record((m[1] ?? '').trim());
-      while ((m = catAttrRegex.exec(body)) !== null) record((m[1] ?? '').trim());
-    }
-  } catch { /* dir may not exist */ }
-  return Object.entries(catMap)
-    .map(([name, { count, usedBy }]) => ({ name, count, usedBy: count < 5 ? usedBy : [] }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-async function scanVendorTabs(libraryPath: string): Promise<string[]> {
-  const tabs = new Set<string>();
-  try {
-    const itemsDir = join(libraryPath, 'items');
-    const entries = await fs.readdir(itemsDir, { withFileTypes: true });
-    for (const entry of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const content = await fs.readFile(join(itemsDir, entry.name), 'utf-8');
-      const shopTabRegex = /\bShopTab="([^"]+)"/g;
-      let m;
-      while ((m = shopTabRegex.exec(content)) !== null) {
-        const v = (m[1] ?? '').trim();
-        if (v) tabs.add(v);
-      }
-    }
-  } catch { /* dir may not exist */ }
-  return [...tabs].sort();
-}
 
 async function scanFilenamePrefixes(
   libraryPath: string,
@@ -544,24 +620,6 @@ async function scanFilenamePrefixes(
     }
   } catch { /* dir may not exist */ }
   return [...prefixes].sort();
-}
-
-async function scanElementNames(libraryPath: string): Promise<string[]> {
-  const set = new Set<string>();
-  try {
-    const etDir = join(libraryPath, 'elementtables');
-    const entries = await fs.readdir(etDir, { withFileTypes: true });
-    for (const entry of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const content = await fs.readFile(join(etDir, entry.name), 'utf-8');
-      const elemRegex = /<Source[^>]+Element="([^"]+)"/g;
-      let m;
-      while ((m = elemRegex.exec(content)) !== null) {
-        const v = (m[1] ?? '').trim();
-        if (v) set.add(v);
-      }
-    }
-  } catch { /* dir may not exist */ }
-  return [...set].sort();
 }
 
 async function scanIgnoredMapDetails(libraryPath: string): Promise<MapDetail[]> {
@@ -654,24 +712,56 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
   };
 }
 
-/** Build the complete world index by scanning every type. */
+/**
+ * Build the complete world index by scanning every type.
+ *
+ * Incremental: a per-section build signature (`_filecache.json`) is compared
+ * against the current on-disk state. Types whose files are unchanged reuse their
+ * fields from the previously persisted index instead of re-reading and
+ * re-parsing — so a no-change rebuild is O(stat) and editing one type rescans
+ * only that type. The computed signature is attached to the returned index as
+ * `__fileCache` so `saveIndex` can persist it without recomputing.
+ */
 export async function buildIndex(
   libraryPath: string,
   options: BuildOptions = {},
 ): Promise<WorldIndex> {
   const { onProgress } = options;
   const index = emptyWorldIndex(libraryPath);
+  const indexRecord = index as unknown as Record<string, unknown>;
+
+  const current = await computeFileCache(libraryPath);
+  const prior = await loadFileCache(libraryPath);
+  // Only load the prior index if there's a cache to reuse from.
+  const priorIndex = prior ? await loadIndex(libraryPath) : null;
+  const priorRecord = priorIndex as unknown as Record<string, unknown> | null;
 
   for (const type of INDEX_TYPES) {
-    const { fields } = await buildSection(libraryPath, type, options);
-    Object.assign(index as unknown as Record<string, unknown>, fields);
+    const reusable =
+      priorRecord && prior && sectionSigEqual(current[type], prior[type]);
+    if (reusable) {
+      // Copy this type's owned fields straight from the prior index.
+      for (const key of fieldsForType(type)) {
+        if (key in priorRecord) indexRecord[key] = priorRecord[key];
+      }
+      onProgress?.({ phase: 'done', type });
+    } else {
+      const { fields } = await buildSection(libraryPath, type, options);
+      Object.assign(indexRecord, fields);
+    }
   }
 
   onProgress?.({ phase: 'cross-ref' });
-  const { scripts, cookieNames } = await scanScriptsAndCookies(libraryPath);
-  index.scripts = scripts;
-  index.cookieNames = cookieNames;
+  if (priorRecord && prior && sectionSigEqual(current[SCRIPTS_KEY], prior[SCRIPTS_KEY])) {
+    index.scripts = (priorRecord.scripts as string[]) ?? [];
+    index.cookieNames = (priorRecord.cookieNames as string[]) ?? [];
+  } else {
+    const { scripts, cookieNames } = await scanScriptsAndCookies(libraryPath);
+    index.scripts = scripts;
+    index.cookieNames = cookieNames;
+  }
 
+  indexRecord.__fileCache = current as unknown as FileCache;
   onProgress?.({ phase: 'done' });
   return index;
 }
