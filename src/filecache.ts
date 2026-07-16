@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { INDEX_TYPES } from './types.js';
 import { getFileCachePath } from './paths.js';
+import { listLuaFiles, listSectionFiles } from './scan.js';
 
 /**
  * Incremental-build support. A full `buildIndex` re-reads and re-parses every
@@ -41,45 +42,25 @@ async function statSig(full: string, rel: string): Promise<FileSig | null> {
   }
 }
 
-/** Signature of the `.xml` files directly in `dir` (non-recursive). */
-async function dirSignature(dir: string, base: string): Promise<FileSig[]> {
-  const sigs: FileSig[] = [];
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.isFile() && e.name.endsWith('.xml')) {
-        const s = await statSig(join(dir, e.name), join(base, e.name));
-        if (s) sigs.push(s);
-      }
-    }
-  } catch { /* dir may not exist */ }
-  return sigs;
+/** Stat a set of section-relative paths into a sorted signature. */
+async function signatureFor(dir: string, base: string, rels: string[]): Promise<SectionSignature> {
+  const sigs = await Promise.all(rels.map((rel) => statSig(join(dir, rel), `${base}/${rel}`)));
+  return sigs
+    .filter((s): s is FileSig => s !== null)
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-/** Recursive signature of `.lua` files under `dir`. */
-async function luaSignature(dir: string, base: string): Promise<FileSig[]> {
-  const sigs: FileSig[] = [];
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      const rel = join(base, e.name);
-      if (e.isDirectory()) sigs.push(...(await luaSignature(full, rel)));
-      else if (e.isFile() && e.name.endsWith('.lua')) {
-        const s = await statSig(full, rel);
-        if (s) sigs.push(s);
-      }
-    }
-  } catch { /* dir may not exist */ }
-  return sigs;
-}
-
-/** Signature for one type: its active dir plus its `.ignore/` archive. */
-async function sectionSignature(libraryPath: string, type: string): Promise<SectionSignature> {
-  const dir = join(libraryPath, type);
-  const active = await dirSignature(dir, type);
-  const archived = await dirSignature(join(dir, '.ignore'), `${type}/.ignore`);
-  return [...active, ...archived].sort((a, b) => a.path.localeCompare(b.path));
+/**
+ * Signature for one type: every `.xml` under its directory, active and archived.
+ * Shares `listSectionFiles` with the builder so the two always cover the same
+ * files — see the note in scan.ts on why that matters.
+ */
+export async function sectionSignature(
+  libraryPath: string,
+  type: string,
+): Promise<SectionSignature> {
+  const { dir, active, archived } = await listSectionFiles(libraryPath, type);
+  return signatureFor(dir, type, [...active, ...archived]);
 }
 
 /** Compute the full file cache (every type + the scripts scan). */
@@ -89,9 +70,7 @@ export async function computeFileCache(libraryPath: string): Promise<FileCache> 
     cache[type] = await sectionSignature(libraryPath, type);
   }
   const scriptsDir = join(libraryPath, '..', 'scripts');
-  cache[SCRIPTS_KEY] = (await luaSignature(scriptsDir, 'scripts')).sort((a, b) =>
-    a.path.localeCompare(b.path),
-  );
+  cache[SCRIPTS_KEY] = await signatureFor(scriptsDir, SCRIPTS_KEY, await listLuaFiles(scriptsDir));
   return cache;
 }
 
