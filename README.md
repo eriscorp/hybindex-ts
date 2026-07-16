@@ -6,6 +6,39 @@ World index builder for Hybrasyl XML libraries. Shared between [Creidhne](https:
 
 Scans a `world/xml/` directory tree and produces a `WorldIndex` — a JSON shape describing every XML entity in the library, plus cross-references (status → castables that apply it, item → NPCs that vendor it, etc.), category lists, map coordinates, Lua script cookies, and more.
 
+## Directory layout
+
+Scanning is **recursive**, matching the server: Hybrasyl loads world XML with `SearchOption.AllDirectories`, so subdirectories under a type directory are legal and do load.
+
+```
+world/xml/
+├── castables/
+│   ├── blast.xml               → key "blast.xml"
+│   ├── fire/inferno.xml        → key "fire/inferno.xml"
+│   └── .ignore/                → archived: the server never loads these
+│       ├── old.xml             → key ".ignore/old.xml"
+│       └── deprecated/x.xml    → key ".ignore/deprecated/x.xml"
+```
+
+**Filename keys are paths relative to the type directory, forward-slashed** — in `castablesNamesByFilename`, `castableFilenames`, `MapDetail.filename`, and friends. `join(libraryPath, type, key)` resolves any of them.
+
+### Archived (`.ignore/`) content
+
+A file is **archived** when any path segment is exactly `.ignore`, at any depth. Archived content is indexed but always distinguishable from live content:
+
+- Active name lists (`index.castables`, …) contain **only** active entries. Archived names live in `archivedCastables`, `archivedStatuses`, and so on.
+- `namesByFilename` maps cover both, and the `.ignore/` key prefix is what marks an entry archived. Use the exported `isArchivedPath` rather than hand-rolling the check:
+
+```ts
+import { isArchivedPath } from '@eriscorp/hybindex-ts';
+const activeOnly = Object.keys(index.castablesNamesByFilename).filter((k) => !isArchivedPath(k));
+```
+
+- `castableFilenames` is active-only.
+- Maps split into `mapDetails` (active) and `ignoredMapDetails` (archived).
+
+> The server tests the whole path with `!x.Contains(".ignore")`, so it also skips `sword.ignore.xml` and `old.ignored/`. This package matches on path segments instead — the substring rule would blank an entire world checked out under a directory containing `.ignore`. No such filename exists in the world data.
+
 The index is a **rebuildable, per-machine cache** — derived data, not source — so it lives in local app storage outside the (git-tracked) world folder. The authoritative `constants.json` / `formulas.json` stay in `world/.creidhne/`; only this package's index files moved out:
 
 ```
@@ -24,6 +57,8 @@ The index is a **rebuildable, per-machine cache** — derived data, not source �
 - Builds are **incremental**: `_filecache.json` records a cheap stat-only signature per section, so a no-change rebuild is `O(stat)` and editing one type rescans only that type.
 
 Pre-0.3.0 the index lived in-world under `world/.creidhne/`. There is no migration of that derived data — it is simply cleaned up (`cleanupInWorldIndex`) the next time the index is saved.
+
+`SCHEMA_VERSION` namespaces the cache directory, so a schema bump simply rebuilds from scratch on next run rather than migrating. It is now `v2` — filename keys became type-relative paths, so a `v1` cache is not readable under the current semantics. Any `v1/` directory left behind is inert and can be deleted by hand.
 
 ## Install
 
@@ -64,7 +99,7 @@ const loaded = await loadIndex('/path/to/world/xml');
 
 ```ts
 interface ProgressEvent {
-  phase: 'scan' | 'cross-ref' | 'write' | 'done';
+  phase: 'scan' | 'cross-ref' | 'done';
   type?: IndexType;      // set during `scan` phase
   current?: number;      // files processed so far
   total?: number;        // files in this type
@@ -83,6 +118,8 @@ interface ProgressEvent {
 | `deleteIndex(libraryPath)` | Remove all cached index files (and any stale in-world copy). Authoritative `constants.json` / `formulas.json` are untouched. |
 | `getIndexStatus(libraryPath)` | `{ exists, builtAt?, stale? }` — `stale` is true when the world's files no longer match the build signature. |
 | `cleanupInWorldIndex(libraryPath)` | Remove the pre-0.3.0 in-world index files. Idempotent; called automatically by `saveIndex`. |
+| `isArchivedPath(key)` | True when a filename key lives under an `.ignore/` archive — i.e. content the server never loads. |
+| `listSectionFiles(libraryPath, type)` | `{ dir, active[], archived[] }` — the single definition of which files belong to a section. Enumerate a type directory with this rather than your own `readdir`, or your file list drifts from the index's keys. |
 
 ## Development
 
