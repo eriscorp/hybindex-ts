@@ -74,4 +74,26 @@ describe('listSectionFiles / filecache coupling', () => {
     expect(active).toEqual([]);
     expect(archived).toEqual([]);
   });
+
+  it('matches the extension case-insensitively, preserving the name as written', async () => {
+    // The server globs `*.xml` through a case-insensitive filesystem, so it
+    // loads all of these. Skipping them here would leave the index disagreeing
+    // with what the server actually runs.
+    await writeXml(libraryPath, 'castables', 'upper.XML', castableXml('Upper'));
+    await writeXml(libraryPath, 'castables', 'mixed.Xml', castableXml('Mixed'));
+    await writeXml(libraryPath, 'castables', 'lower.xml', castableXml('Lower'));
+    await writeArchivedXml(libraryPath, 'castables', 'old.XML', castableXml('Old'));
+
+    const { active, archived } = await listSectionFiles(libraryPath, 'castables');
+    // Names come back exactly as they are on disk — only the match is folded.
+    expect(active).toEqual(['lower.xml', 'mixed.Xml', 'upper.XML']);
+    expect(archived).toEqual(['.ignore/old.XML']);
+  });
+
+  it('still ignores files whose extension merely contains xml', async () => {
+    await writeXml(libraryPath, 'castables', 'notes.xmlbak', castableXml('Nope'));
+    await writeXml(libraryPath, 'castables', 'real.xml', castableXml('Yes'));
+    const { active } = await listSectionFiles(libraryPath, 'castables');
+    expect(active).toEqual(['real.xml']);
+  });
 });

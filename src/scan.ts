@@ -48,8 +48,17 @@ export function isArchivedPath(relPath: string): boolean {
 
 /**
  * Recursively collect files under `dir` whose name ends with `ext`, as paths
- * relative to the original root (forward-slashed, extension kept). `onFile`
- * receives each hit so callers can bucket as they go.
+ * relative to the original root (forward-slashed, name and extension kept
+ * verbatim). `onFile` receives each hit so callers can bucket as they go.
+ *
+ * The extension match is case-INSENSITIVE (`ext` must be given lowercase). The
+ * server globs `*.xml` through Windows' case-insensitive filesystem, so it loads
+ * `Abel.XML`; matching case-sensitively here would leave such a file absent from
+ * the index while the server ran it — the index disagreeing with the server
+ * about what exists is the one thing this module exists to prevent.
+ *
+ * Directory names are still compared case-sensitively (see `IGNORE_DIR`), which
+ * matches the server's own `.ignore` test.
  *
  * Symlinked directories are not followed — `Dirent.isDirectory()` is false for a
  * symlink — so the walk cannot cycle.
@@ -71,7 +80,7 @@ async function walk(
     const childRel = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) {
       await walk(join(dir, e.name), childRel, ext, inIgnore || e.name === IGNORE_DIR, onFile);
-    } else if (e.isFile() && e.name.endsWith(ext)) {
+    } else if (e.isFile() && e.name.toLowerCase().endsWith(ext)) {
       onFile(childRel, inIgnore);
     }
   }
