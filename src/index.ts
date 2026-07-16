@@ -17,6 +17,13 @@
 export { buildIndex, buildSection } from './builder.js';
 export type { SectionResult } from './builder.js';
 
+// `listSectionFiles` is the single definition of "which files belong to section
+// <type>". Consumers that enumerate a section (editor file lists, XML crawls,
+// CSV reports) must go through it rather than their own readdir, or their file
+// set drifts from the index's — see the module docstring in scan.ts.
+export { isArchivedPath, listSectionFiles } from './scan.js';
+export type { SectionFiles } from './scan.js';
+
 export {
   loadIndex,
   saveIndex,

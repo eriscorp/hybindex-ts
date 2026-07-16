@@ -31,6 +31,7 @@ export type IndexType = (typeof INDEX_TYPES)[number];
 export interface MapDetail {
   id: number;
   name: string;
+  /** Path relative to `maps/`, forward-slashed. `.ignore/`-prefixed when archived. */
   filename: string;
   x: number;
   y: number;
@@ -94,7 +95,13 @@ export interface WorldIndex {
   archivedStatuses: string[];
   archivedVariantgroups: string[];
 
-  // Filename → display name maps (filter by Name in editor file lists)
+  // Filename → display name maps (filter by Name in editor file lists).
+  //
+  // Keys are paths RELATIVE TO THE TYPE DIRECTORY, forward-slashed: `blast.xml`
+  // for a file at the top level, `fire/blast.xml` in a subdirectory, and
+  // `.ignore/old.xml` for an archived one. Archived entries share these maps
+  // with active ones; the `.ignore/` prefix is what distinguishes them (see
+  // `isArchivedPath`), and it is why the two can no longer collide on basename.
   castablesNamesByFilename: Record<string, string>;
   statusesNamesByFilename: Record<string, string>;
   itemsNamesByFilename: Record<string, string>;
@@ -112,7 +119,7 @@ export interface WorldIndex {
   worldmapsNamesByFilename: Record<string, string>;
 
   // Castable-specific cross-references
-  castableFilenames: Record<string, string>; // display name → filename
+  castableFilenames: Record<string, string>; // display name → filename (active only)
   castableClasses: Record<string, string>; // castable name → space-separated class list
   statusCasters: Record<string, string[]>; // status name (lowercased) → castables that add it
 

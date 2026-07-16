@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 /**
  * Create a temp world root with the expected layout:
@@ -18,26 +18,25 @@ export async function makeWorldTemp(): Promise<{ libraryPath: string; root: stri
   return { libraryPath, root };
 }
 
+/** `relPath` may name a subdirectory (`fire/blast.xml`), not just a filename. */
 export async function writeXml(
   libraryPath: string,
   type: string,
-  filename: string,
+  relPath: string,
   content: string,
 ): Promise<void> {
-  const dir = join(libraryPath, type);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(join(dir, filename), content, 'utf-8');
+  const full = join(libraryPath, type, relPath);
+  await fs.mkdir(dirname(full), { recursive: true });
+  await fs.writeFile(full, content, 'utf-8');
 }
 
 export async function writeArchivedXml(
   libraryPath: string,
   type: string,
-  filename: string,
+  relPath: string,
   content: string,
 ): Promise<void> {
-  const dir = join(libraryPath, type, '.ignore');
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(join(dir, filename), content, 'utf-8');
+  return writeXml(libraryPath, type, join('.ignore', relPath), content);
 }
 
 export async function writeLua(libraryPath: string, relPath: string, content: string): Promise<void> {
@@ -151,6 +150,10 @@ ${itemTags}
   </Items>
 </LootSet>`;
 };
+
+export const spawnGroupXml = (name: string): string =>
+  `<?xml version="1.0" encoding="utf-8"?>
+<SpawnGroup xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}"/>`;
 
 export const serverConfigXml = (name: string): string =>
   `<?xml version="1.0" encoding="utf-8"?>

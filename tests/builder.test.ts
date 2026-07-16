@@ -15,6 +15,7 @@ import {
   mapXml,
   npcXml,
   serverConfigXml,
+  spawnGroupXml,
   statusXml,
   statusXmlWithMeta,
   writeArchivedXml,
@@ -96,7 +97,7 @@ describe('buildIndex', () => {
     expect(index.mapDetails).toEqual([{ id: 500, name: 'Piet', filename: 'piet.xml', x: 10, y: 20 }]);
   });
 
-  it('scans archived files into archived<Type> and merges names into NamesByFilename', async () => {
+  it('scans archived files into archived<Type> and keys them under .ignore/', async () => {
     await writeXml(libraryPath, 'castables', 'active.xml', castableXml('Active Spell'));
     await writeArchivedXml(libraryPath, 'castables', 'archived.xml', castableXml('Archived Spell'));
 
@@ -104,7 +105,9 @@ describe('buildIndex', () => {
     expect(index.castables).toEqual(['Active Spell']);
     expect(index.archivedCastables).toEqual(['Archived Spell']);
     expect(index.castablesNamesByFilename['active.xml']).toBe('Active Spell');
-    expect(index.castablesNamesByFilename['archived.xml']).toBe('Archived Spell');
+    // Archived entries share the map but carry their `.ignore/` prefix — that
+    // prefix is what flags them as content the server never loads.
+    expect(index.castablesNamesByFilename['.ignore/archived.xml']).toBe('Archived Spell');
     // castableFilenames is active-only
     expect(index.castableFilenames['Archived Spell']).toBeUndefined();
   });
@@ -393,5 +396,167 @@ describe('incremental buildIndex', () => {
     expect(built.vendorTabs).toEqual(['Consumables', 'Weapons']);
     expect(built.itemCategories).toEqual(['Blades', 'Drinks']);
     expect(built.itemCategoryDetails.map((c) => c.name)).toEqual(['Blades', 'Drinks']);
+  });
+
+  // The regression that matters most: if the builder scans subdirectories but
+  // the file cache signature does not, an edit down there never invalidates and
+  // the index freezes at its first build — silently, forever.
+  it('an edit in a subdirectory invalidates the cache and rescans', async () => {
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Blast'));
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+    expect(first.castables).toEqual(['Blast']);
+
+    await new Promise((r) => setTimeout(r, 10));
+    // Different length, so `size` alone is enough to invalidate.
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Blast Renamed'));
+
+    const second = await buildIndex(libraryPath);
+    expect(second.castables).toEqual(['Blast Renamed']);
+  });
+
+  it('a same-size edit in a subdirectory still invalidates (mtime is tracked)', async () => {
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Blast Aaaa'));
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+
+    await new Promise((r) => setTimeout(r, 10));
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Blast Bbbb'));
+
+    const second = await buildIndex(libraryPath);
+    expect(second.castables).toEqual(['Blast Bbbb']);
+  });
+
+  it('a new file in a subdirectory invalidates the cache', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+
+    await writeXml(libraryPath, 'castables', 'fire/new.xml', castableXml('Beag Sal'));
+    const second = await buildIndex(libraryPath);
+    expect(second.castables).toEqual(['Ard Sal', 'Beag Sal']);
+  });
+
+  it('an edit under a nested .ignore invalidates the cache', async () => {
+    await writeArchivedXml(libraryPath, 'castables', 'old/a.xml', castableXml('Old One'));
+    const first = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, first);
+    expect(first.archivedCastables).toEqual(['Old One']);
+
+    await new Promise((r) => setTimeout(r, 10));
+    await writeArchivedXml(libraryPath, 'castables', 'old/a.xml', castableXml('Old One Renamed'));
+
+    const second = await buildIndex(libraryPath);
+    expect(second.archivedCastables).toEqual(['Old One Renamed']);
+  });
+});
+
+// ── Recursive scanning ──────────────────────────────────────────────────────
+
+describe('recursive scanning', () => {
+  it('indexes active files in subdirectories, keyed by type-relative path', async () => {
+    await writeXml(libraryPath, 'castables', 'flat.xml', castableXml('Flat'));
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Blast'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castables).toEqual(['Blast', 'Flat']);
+    expect(index.castablesNamesByFilename['fire/blast.xml']).toBe('Blast');
+    expect(index.castableFilenames['Blast']).toBe('fire/blast.xml');
+  });
+
+  it('keeps both files when two subdirectories share a basename', async () => {
+    await writeXml(libraryPath, 'castables', 'fire/blast.xml', castableXml('Fire Blast'));
+    await writeXml(libraryPath, 'castables', 'ice/blast.xml', castableXml('Ice Blast'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castables).toEqual(['Fire Blast', 'Ice Blast']);
+    expect(index.castablesNamesByFilename['fire/blast.xml']).toBe('Fire Blast');
+    expect(index.castablesNamesByFilename['ice/blast.xml']).toBe('Ice Blast');
+  });
+
+  it('indexes archived files nested inside .ignore subdirectories', async () => {
+    // Mirrors the real world data, which parks 76 files under
+    // `spawngroups/.ignore/Deprecated Spawngroups/`.
+    await writeArchivedXml(libraryPath, 'spawngroups', 'Deprecated/old.xml', spawnGroupXml('Old Group'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.archivedSpawngroups).toEqual(['Old Group']);
+    expect(index.spawngroupsNamesByFilename['.ignore/Deprecated/old.xml']).toBe('Old Group');
+  });
+
+  it('treats .ignore as archived at any depth', async () => {
+    await writeXml(libraryPath, 'castables', 'sub/.ignore/deep.xml', castableXml('Deep'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castables).not.toContain('Deep');
+    expect(index.archivedCastables).toContain('Deep');
+  });
+
+  it('does not treat a filename merely containing .ignore as archived', async () => {
+    // The server would skip this (it substring-matches the whole path); we do
+    // not. No such file exists in the world data — see scan.ts for the rationale.
+    await writeXml(libraryPath, 'castables', 'my.ignore.xml', castableXml('Tricky'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castables).toContain('Tricky');
+    expect(index.archivedCastables).not.toContain('Tricky');
+  });
+
+  it('an archived file no longer clobbers an active file with the same basename', async () => {
+    await writeXml(libraryPath, 'castables', 'dup.xml', castableXml('Active One'));
+    await writeArchivedXml(libraryPath, 'castables', 'dup.xml', castableXml('Archived One'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castablesNamesByFilename['dup.xml']).toBe('Active One');
+    expect(index.castablesNamesByFilename['.ignore/dup.xml']).toBe('Archived One');
+    expect(index.castableFilenames['Archived One']).toBeUndefined();
+  });
+
+  it('keeps an active castable whose name also exists in the archive', async () => {
+    // castableFilenames used to exclude by NAME, so the active file was wrongly
+    // dropped whenever an archived file happened to share its name.
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Shared'));
+    await writeArchivedXml(libraryPath, 'castables', 'old.xml', castableXml('Shared'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.castableFilenames['Shared']).toBe('a.xml');
+  });
+
+  it('carries type-relative filenames in mapDetails and ignoredMapDetails', async () => {
+    // The real world data has maps/DarsDarkMagicShop.xml colliding with an
+    // identically named file in maps/.ignore/.
+    await writeXml(libraryPath, 'maps', 'dup.xml', mapXml('Active Map', 1, 10, 20));
+    await writeArchivedXml(libraryPath, 'maps', 'dup.xml', mapXml('Archived Map', 2, 30, 40));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapDetails).toEqual([
+      { id: 1, name: 'Active Map', filename: 'dup.xml', x: 10, y: 20 },
+    ]);
+    expect(index.ignoredMapDetails).toEqual([
+      { id: 2, name: 'Archived Map', filename: '.ignore/dup.xml', x: 30, y: 40 },
+    ]);
+  });
+
+  it('derives npcJobs from basenames regardless of subdirectory', async () => {
+    await writeXml(libraryPath, 'npcs', 'town/vendor_bob.xml', npcXml('Bob'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.npcJobs).toEqual(['vendor']);
+  });
+
+  it('scans lua scripts and cookies in subdirectories', async () => {
+    await writeLua(libraryPath, 'quests/deep/q.lua', 'player.setcookie("deep_cookie")');
+
+    const index = await buildIndex(libraryPath);
+    expect(index.scripts).toContain('quests/deep/q');
+    expect(index.cookieNames).toContain('deep_cookie');
+  });
+
+  it('orders usedBy deterministically by file path, not readdir order', async () => {
+    await writeXml(libraryPath, 'items', 'b.xml', itemXml('Bravo', { category: 'Weapon' }));
+    await writeXml(libraryPath, 'items', 'a.xml', itemXml('Alpha', { category: 'Weapon' }));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.itemCategoryDetails[0]?.usedBy).toEqual(['Alpha', 'Bravo']);
   });
 });

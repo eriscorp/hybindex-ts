@@ -1,4 +1,3 @@
-import { promises as fs, type Dirent } from 'fs';
 import { join } from 'path';
 import type {
   BuildOptions,
@@ -9,8 +8,7 @@ import type {
   WorldIndex,
 } from './types.js';
 import { INDEX_TYPES } from './types.js';
-import { fieldsForType } from './storage.js';
-import { loadIndex } from './storage.js';
+import { fieldsForType, loadIndex } from './storage.js';
 import {
   SCRIPTS_KEY,
   computeFileCache,
@@ -18,36 +16,14 @@ import {
   sectionSigEqual,
   type FileCache,
 } from './filecache.js';
-
-/** Max concurrent file reads per section scan (I/O parallelism). */
-const READ_CONCURRENCY = 16;
+import { listLuaFiles, listSectionFiles, readAllInOrder } from './scan.js';
 
 /**
- * Read every file in `dir` named by `filenames` concurrently (bounded pool),
- * returning contents in the SAME order as `filenames`. Order preservation is
- * required: several accumulators (statusCasters, itemVendors, npcStringKeys,
- * formulaUsedBy*, category usedBy) append in file order and are not re-sorted,
- * so parsing must happen in the original readdir order even though reads finish
- * out of order. Unreadable files yield `null` and are skipped by the caller.
+ * Last segment of a type-relative path. Paths from scan.ts are always
+ * forward-slashed, so this is platform-independent (unlike `path.basename`,
+ * which only treats `/` as a separator on POSIX).
  */
-async function readAllInOrder(dir: string, filenames: string[]): Promise<(string | null)[]> {
-  const results = new Array<string | null>(filenames.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      const i = next++;
-      if (i >= filenames.length) return;
-      try {
-        results[i] = await fs.readFile(join(dir, filenames[i]!), 'utf-8');
-      } catch {
-        results[i] = null;
-      }
-    }
-  };
-  const poolSize = Math.min(READ_CONCURRENCY, filenames.length);
-  await Promise.all(Array.from({ length: poolSize }, worker));
-  return results;
-}
+const baseName = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1);
 
 /**
  * Accumulate <Categories> usage from one file's content into `catMap`. Mirrors
@@ -148,51 +124,57 @@ function addReverseRef(
 
 // ── File utilities ──────────────────────────────────────────────────────────
 
-async function walkDir(
-  dir: string,
-  ext: string,
-  base: string,
-  results: string[] = [],
-): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      if (e.isDirectory()) await walkDir(full, ext, base, results);
-      else if (e.isFile() && e.name.endsWith(ext)) {
-        results.push(full.slice(base.length + 1).replace(/\\/g, '/').replace(/\.[^.]+$/, ''));
-      }
-    }
-  } catch { /* dir may not exist */ }
-  return results;
-}
-
 /**
- * Scan an archived `.ignore/` directory for names. Returns sorted array of
- * names and a filename→name map covering the archived files.
+ * Extract names from a type's archived (`.ignore/`) files. Archived entries are
+ * a name catalog only — the full cross-reference extraction below applies to
+ * active files, since the server never loads anything under `.ignore/`.
+ *
+ * `rels` are the pre-enumerated archived paths from `listSectionFiles`, so the
+ * returned `namesByFilename` is keyed by `.ignore/`-prefixed relative path and
+ * cannot collide with the active map.
  */
 async function readArchived(
-  dirPath: string,
+  dir: string,
+  rels: string[],
   nameRegex: RegExp,
 ): Promise<{ names: string[]; namesByFilename: Record<string, string> }> {
   const names: string[] = [];
+  const nameSet = new Set<string>();
   const namesByFilename: Record<string, string> = {};
-  try {
-    const ignoredDir = join(dirPath, '.ignore');
-    const entries = await fs.readdir(ignoredDir, { withFileTypes: true });
-    for (const file of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const content = await fs.readFile(join(ignoredDir, file.name), 'utf-8');
-      const m = nameRegex.exec(content);
-      if (m && m[1]) {
-        const n = m[1].trim();
-        if (n) {
-          if (!names.includes(n)) names.push(n);
-          namesByFilename[file.name] = n;
-        }
-      }
+  const contents = await readAllInOrder(dir, rels);
+  for (let i = 0; i < rels.length; i++) {
+    const content = contents[i];
+    if (content == null) continue;
+    const n = nameRegex.exec(content)?.[1]?.trim();
+    if (!n) continue;
+    if (!nameSet.has(n)) {
+      nameSet.add(n);
+      names.push(n);
     }
-  } catch { /* .ignore may not exist */ }
+    namesByFilename[rels[i]!] = n;
+  }
   return { names: names.sort(), namesByFilename };
+}
+
+/**
+ * Extract a map's id/coords. Shared by the active scan and the archived scan so
+ * both agree on what a MapDetail is. `name` is optional here: the active branch
+ * gates on a non-empty <Name> itself (it needs one to register the map), while
+ * archived maps are catalogued even when unnamed.
+ */
+function parseMapDetail(content: string, rel: string): MapDetail | null {
+  const idMatch = /\bId="(\d+)"/.exec(content);
+  const xMatch = /\bX="(\d+)"/.exec(content);
+  const yMatch = /\bY="(\d+)"/.exec(content);
+  if (!idMatch?.[1] || !xMatch?.[1] || !yMatch?.[1]) return null;
+  const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
+  return {
+    id: parseInt(idMatch[1], 10),
+    name: nameMatch && nameMatch[1] ? nameMatch[1].trim() : '',
+    filename: rel,
+    x: parseInt(xMatch[1], 10),
+    y: parseInt(yMatch[1], 10),
+  };
 }
 
 // ── Per-type scan ───────────────────────────────────────────────────────────
@@ -219,7 +201,6 @@ export async function buildSection(
   options: BuildOptions = {},
 ): Promise<SectionResult> {
   const { onProgress } = options;
-  const dirPath = join(libraryPath, type);
   const names: string[] = [];
   const nameSet = new Set<string>();
   const namesByFilename: Record<string, string> = {};
@@ -239,6 +220,7 @@ export async function buildSection(
   const statusCasters: Record<string, string[]> = {};
   const npcResponseCalls: Record<string, string> = {};
   const npcStringKeys: NpcStringKey[] = [];
+  const npcStringKeySet = new Set<string>();
   const creatureTypes: string[] = [];
   const creatureTypesSet = new Set<string>();
   const castableTrainers: Record<string, string[]> = {};
@@ -261,35 +243,33 @@ export async function buildSection(
     return true;
   };
 
-  let entries: Dirent[] = [];
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch { /* dir may not exist */ }
-
-  const xmlEntries = entries.filter((e) => e.isFile() && e.name.endsWith('.xml'));
-  const filenames = xmlEntries.map((e) => e.name);
+  // Recursive: subdirectories under a type dir are legal on disk (the server
+  // loads them). `active`/`archived` are type-relative paths — `fire/blast.xml`,
+  // `.ignore/old.xml` — which is what namesByFilename is keyed by.
+  const { dir: dirPath, active, archived } = await listSectionFiles(libraryPath, type);
   // Phase 1: read all files concurrently (bounded). Phase 2 (below) parses them
-  // in original order so order-sensitive accumulators stay deterministic.
-  const contents = await readAllInOrder(dirPath, filenames);
+  // in enumeration order so order-sensitive accumulators stay deterministic.
+  const contents = await readAllInOrder(dirPath, active);
   let scanned = 0;
 
-  for (let fi = 0; fi < filenames.length; fi++) {
-    const fileName = filenames[fi]!;
+  for (let fi = 0; fi < active.length; fi++) {
+    const rel = active[fi]!;
     const content = contents[fi];
     if (content == null) {
       scanned += 1;
-      onProgress?.({ phase: 'scan', type, current: scanned, total: filenames.length });
+      onProgress?.({ phase: 'scan', type, current: scanned, total: active.length });
       continue;
     }
     const recordName = (name: string): void => {
       addName(name);
-      namesByFilename[fileName] = name;
+      namesByFilename[rel] = name;
     };
 
     // Folded aggregates (run for every file of the type, matching the old
     // standalone scans which did not dedup by name).
     if (type === 'castables' || type === 'statuses' || type === 'items') {
-      accumulateCategories(content, fileName.replace(/\.xml$/i, ''), catMap);
+      // Fallback display name only — a basename, not an index key.
+      accumulateCategories(content, baseName(rel).replace(/\.xml$/i, ''), catMap);
     }
     if (type === 'items') {
       shopTabRegex.lastIndex = 0;
@@ -369,7 +349,10 @@ export async function buildSection(
         while ((sm = strRegex.exec(sectionMatch[0])) !== null) {
           const key = (sm[1] ?? '').trim();
           const message = (sm[2] ?? '').trim();
-          if (key && !npcStringKeys.some((s) => s.key === key && s.category === label)) {
+          if (!key) continue;
+          const seenKey = `${label}\u0000${key}`;
+          if (!npcStringKeySet.has(seenKey)) {
+            npcStringKeySet.add(seenKey);
             npcStringKeys.push({ key, message, category: label });
           }
         }
@@ -397,18 +380,8 @@ export async function buildSection(
         const name = nameMatch[1].trim();
         if (name) {
           addName(name);
-          const idMatch = /\bId="(\d+)"/.exec(content);
-          const xMatch = /\bX="(\d+)"/.exec(content);
-          const yMatch = /\bY="(\d+)"/.exec(content);
-          if (idMatch?.[1] && xMatch?.[1] && yMatch?.[1]) {
-            mapDetails.push({
-              id: parseInt(idMatch[1], 10),
-              name,
-              filename: fileName,
-              x: parseInt(xMatch[1], 10),
-              y: parseInt(yMatch[1], 10),
-            });
-          }
+          const detail = parseMapDetail(content, rel);
+          if (detail) mapDetails.push(detail);
         }
       }
     } else if (attrNameRegex) {
@@ -501,7 +474,7 @@ export async function buildSection(
         if (name) addName(name);
         if (name && firstName === null) firstName = name;
       }
-      if (firstName) namesByFilename[fileName] = firstName;
+      if (firstName) namesByFilename[rel] = firstName;
 
       // Items: capture <Damage SmallMin/SmallMax/LargeMin/LargeMax/> attrs
       // when present (only weapons have it). Used by the damage calculator
@@ -527,16 +500,17 @@ export async function buildSection(
     }
 
     scanned += 1;
-    onProgress?.({ phase: 'scan', type, current: scanned, total: filenames.length });
+    onProgress?.({ phase: 'scan', type, current: scanned, total: active.length });
   }
 
   names.sort();
 
-  // Archived scan
+  // Archived scan. Keys are `.ignore/`-prefixed, so this cannot overwrite an
+  // active entry that happens to share a basename.
   const archRegex = ARCHIVED_NAME_REGEX[type];
   let archivedNames: string[] = [];
   if (archRegex) {
-    const result = await readArchived(dirPath, archRegex);
+    const result = await readArchived(dirPath, archived, archRegex);
     archivedNames = result.names;
     Object.assign(namesByFilename, result.namesByFilename);
   }
@@ -553,12 +527,14 @@ export async function buildSection(
     fields.statusCasters = statusCasters;
     fields.formulaUsedByCastables = formulaUsedByCastables;
     fields.castableRequiredLevels = castableRequiredLevels;
-    // name → filename map (inverse of namesByFilename, kept for backward compat)
+    // name → filename map (inverse of namesByFilename, kept for backward compat).
+    // Driven off the active list so archived files are excluded by where they
+    // live, not by name — an active castable whose name also appears somewhere
+    // in the archive still belongs here.
     const castableFilenames: Record<string, string> = {};
-    for (const [fname, n] of Object.entries(namesByFilename)) {
-      // Archived files also populate namesByFilename; keep castableFilenames
-      // to active files only to match existing Creidhne semantics.
-      if (!archivedNames.includes(n)) castableFilenames[n] = fname;
+    for (const rel of active) {
+      const n = namesByFilename[rel];
+      if (n) castableFilenames[n] = rel;
     }
     fields.castableFilenames = castableFilenames;
     const details = categoryDetailsFrom(catMap);
@@ -577,11 +553,11 @@ export async function buildSection(
     fields.itemWeaponDamage = itemWeaponDamage;
   } else if (type === 'creatures') {
     fields.creatureTypes = creatureTypes.sort();
-    fields.creatureFamilies = await scanFilenamePrefixes(libraryPath, 'creatures');
+    fields.creatureFamilies = filenamePrefixes(active);
   } else if (type === 'npcs') {
     fields.castableTrainers = castableTrainers;
     fields.itemVendors = itemVendors;
-    fields.npcJobs = await scanFilenamePrefixes(libraryPath, 'npcs', (p) => p.toLowerCase() !== 'npc');
+    fields.npcJobs = filenamePrefixes(active, (p) => p.toLowerCase() !== 'npc');
   } else if (type === 'lootsets') {
     fields.itemLootSets = itemLootSets;
   } else if (type === 'localizations') {
@@ -592,7 +568,7 @@ export async function buildSection(
   } else if (type === 'maps') {
     mapDetails.sort((a, b) => a.id - b.id);
     fields.mapDetails = mapDetails;
-    fields.ignoredMapDetails = await scanIgnoredMapDetails(libraryPath);
+    fields.ignoredMapDetails = await readIgnoredMapDetails(dirPath, archived);
   }
 
   onProgress?.({ phase: 'done', type });
@@ -601,49 +577,37 @@ export async function buildSection(
 
 // ── Supporting scans ────────────────────────────────────────────────────────
 
-async function scanFilenamePrefixes(
-  libraryPath: string,
-  type: 'npcs' | 'creatures',
+/**
+ * Derive the `<prefix>_rest.xml` naming convention (npc jobs, creature families)
+ * from already-enumerated files. Keyed off the basename, so a file's
+ * subdirectory has no bearing on its prefix.
+ */
+function filenamePrefixes(
+  rels: string[],
   filter: (prefix: string) => boolean = () => true,
-): Promise<string[]> {
+): string[] {
   const prefixes = new Set<string>();
-  try {
-    const dir = join(libraryPath, type);
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const namePart = entry.name.replace(/\.xml$/i, '');
-      const idx = namePart.indexOf('_');
-      if (idx > 0) {
-        const prefix = namePart.slice(0, idx);
-        if (prefix && filter(prefix)) prefixes.add(prefix);
-      }
+  for (const rel of rels) {
+    const namePart = baseName(rel).replace(/\.xml$/i, '');
+    const idx = namePart.indexOf('_');
+    if (idx > 0) {
+      const prefix = namePart.slice(0, idx);
+      if (prefix && filter(prefix)) prefixes.add(prefix);
     }
-  } catch { /* dir may not exist */ }
+  }
   return [...prefixes].sort();
 }
 
-async function scanIgnoredMapDetails(libraryPath: string): Promise<MapDetail[]> {
+/** Map details for a type's archived files (maps has no ARCHIVED_NAME_REGEX). */
+async function readIgnoredMapDetails(dir: string, rels: string[]): Promise<MapDetail[]> {
+  const contents = await readAllInOrder(dir, rels);
   const list: MapDetail[] = [];
-  try {
-    const dir = join(libraryPath, 'maps', '.ignore');
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const file of entries.filter((e) => e.isFile() && e.name.endsWith('.xml'))) {
-      const content = await fs.readFile(join(dir, file.name), 'utf-8');
-      const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
-      const idMatch = /\bId="(\d+)"/.exec(content);
-      const xMatch = /\bX="(\d+)"/.exec(content);
-      const yMatch = /\bY="(\d+)"/.exec(content);
-      if (idMatch?.[1] && xMatch?.[1] && yMatch?.[1]) {
-        list.push({
-          id: parseInt(idMatch[1], 10),
-          name: nameMatch && nameMatch[1] ? nameMatch[1].trim() : '',
-          filename: file.name,
-          x: parseInt(xMatch[1], 10),
-          y: parseInt(yMatch[1], 10),
-        });
-      }
-    }
-  } catch { /* .ignore may not exist */ }
+  for (let i = 0; i < rels.length; i++) {
+    const content = contents[i];
+    if (content == null) continue;
+    const detail = parseMapDetail(content, rels[i]!);
+    if (detail) list.push(detail);
+  }
   list.sort((a, b) => a.id - b.id);
   return list;
 }
@@ -654,28 +618,22 @@ async function scanScriptsAndCookies(libraryPath: string): Promise<{
   cookieNames: string[];
 }> {
   const scriptsDir = join(libraryPath, '..', 'scripts');
-  const scripts = (await walkDir(scriptsDir, '.lua', scriptsDir)).sort();
+  const rels = await listLuaFiles(scriptsDir);
+  // `index.scripts` holds extensionless paths; the enumeration keeps the
+  // extension so the file cache can stat what it lists.
+  const scripts = rels.map((rel) => rel.replace(/\.[^.]+$/, ''));
 
   const cookies = new Set<string>();
   const cookieRegex = /\w+\.setcookie\s*\(\s*"([^"]+)"/gi;
-  const scan = async (dir: string): Promise<void> => {
-    try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) await scan(full);
-        else if (entry.isFile() && entry.name.endsWith('.lua')) {
-          const content = await fs.readFile(full, 'utf-8');
-          cookieRegex.lastIndex = 0;
-          let m;
-          while ((m = cookieRegex.exec(content)) !== null) {
-            if (m[1]) cookies.add(m[1]);
-          }
-        }
-      }
-    } catch { /* dir may not exist */ }
-  };
-  await scan(scriptsDir);
+  const contents = await readAllInOrder(scriptsDir, rels);
+  for (const content of contents) {
+    if (content == null) continue;
+    cookieRegex.lastIndex = 0;
+    let m;
+    while ((m = cookieRegex.exec(content)) !== null) {
+      if (m[1]) cookies.add(m[1]);
+    }
+  }
   return { scripts, cookieNames: [...cookies].sort() };
 }
 
