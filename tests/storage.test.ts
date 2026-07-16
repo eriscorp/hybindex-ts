@@ -13,6 +13,7 @@ import {
   getIndexFilePath,
   getIndexStatus,
   getLegacyIndexPath,
+  INDEX_TYPES,
   loadIndex,
   resolveCacheBase,
   saveIndex,
@@ -147,6 +148,21 @@ describe('saveSection', () => {
     const newMeta = JSON.parse(await fs.readFile(getIndexFilePath(libraryPath, '_meta'), 'utf-8'));
     expect(newMeta.builtAt).not.toBe(initialMeta.builtAt);
   });
+
+  it('refreshes only its own section signature, leaving others stale', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    const built = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, built);
+
+    // Dirty a different section, then save castables.
+    await writeXml(libraryPath, 'items', 'new.xml', itemXml('New'));
+    const { fields } = await buildSection(libraryPath, 'castables');
+    await saveSection(libraryPath, 'castables', fields);
+
+    // items must still register as stale — saving one section must not silently
+    // mark the whole world as up to date.
+    expect((await getIndexStatus(libraryPath)).stale).toBe(true);
+  });
 });
 
 // ── deleteIndex ─────────────────────────────────────────────────────────────
@@ -219,5 +235,19 @@ describe('path helpers', () => {
     expect(castableFields).toContain('castables');
     expect(castableFields).toContain('castableClasses');
     expect(castableFields).not.toContain('items');
+  });
+
+  // Field ownership is hand-maintained across builder.ts and storage.ts. A field
+  // missing from FIELD_TO_FILE would land in <type>.json via saveSection but
+  // _meta.json via saveIndex, leaving the same field in two files with merge
+  // order deciding the winner. Pin the invariant rather than the instance.
+  it('every field buildSection emits is owned by that type in FIELD_TO_FILE', async () => {
+    for (const type of INDEX_TYPES) {
+      const { fields } = await buildSection(libraryPath, type);
+      const owned = fieldsForType(type);
+      for (const key of Object.keys(fields)) {
+        expect(owned, `${type} emits unowned field "${key}"`).toContain(key);
+      }
+    }
   });
 });

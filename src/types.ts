@@ -182,7 +182,7 @@ export interface WorldIndex {
 
 /** Progress callback payload emitted by buildIndex while scanning. */
 export interface ProgressEvent {
-  phase: 'scan' | 'cross-ref' | 'write' | 'done';
+  phase: 'scan' | 'cross-ref' | 'done';
   type?: IndexType;
   current?: number;
   total?: number;

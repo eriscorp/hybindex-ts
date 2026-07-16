@@ -12,6 +12,7 @@ import {
   computeFileCache,
   fileCacheEqual,
   loadFileCache,
+  sectionSignature,
   writeFileCache,
   type FileCache,
 } from './filecache.js';
@@ -133,12 +134,7 @@ const FIELD_TO_FILE: Record<string, string> = {
 };
 
 /** All unique file names in the per-type layout, including `_meta`. */
-const INDEX_FILES: readonly string[] = [
-  '_meta',
-  ...INDEX_TYPES.filter((t) => t !== 'serverconfigs' && t !== 'worldmaps'),
-  'serverconfigs',
-  'worldmaps',
-];
+const INDEX_FILES: readonly string[] = ['_meta', ...INDEX_TYPES];
 
 /** Keys not part of the persisted index (computed scaffolding). */
 const NON_PERSISTED_KEYS = new Set(['__fileCache']);
@@ -288,9 +284,7 @@ export async function saveSection(
   // Refresh the build signature for just this section so a subsequent
   // buildIndex sees it as up to date. Other sections keep their prior entries.
   const prior = (await loadFileCache(libraryPath)) ?? {};
-  const fresh = await computeFileCache(libraryPath);
-  const sig = fresh[type];
-  if (sig) prior[type] = sig;
+  prior[type] = await sectionSignature(libraryPath, type);
   await writeFileCache(libraryPath, prior);
 }
 
