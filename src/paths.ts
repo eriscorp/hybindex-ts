@@ -8,7 +8,7 @@ import { join, resolve } from 'path';
  * (`…/hybindex/v<SCHEMA_VERSION>/…`) so two app versions on different schemas
  * never read each other's files.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Root of the shared, app-agnostic index cache. The derived index is a

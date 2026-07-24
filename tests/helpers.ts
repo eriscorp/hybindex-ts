@@ -54,13 +54,22 @@ export async function cleanup(root: string): Promise<void> {
 
 export const castableXml = (
   name: string,
-  opts: { class?: string; icon?: number; healFormulaName?: string; damageFormulaName?: string } = {},
+  opts: {
+    class?: string;
+    icon?: number;
+    healFormulaName?: string;
+    damageFormulaName?: string;
+    categories?: string[];
+  } = {},
 ): string => {
   const metaBits: Record<string, unknown> = {};
   if (opts.healFormulaName) metaBits.healFormulaName = opts.healFormulaName;
   if (opts.damageFormulaName) metaBits.damageFormulaName = opts.damageFormulaName;
   const metaComment = Object.keys(metaBits).length
     ? `\n  <!-- creidhne:meta ${JSON.stringify(metaBits)} -->`
+    : '';
+  const categories = opts.categories?.length
+    ? `\n  <Categories>${opts.categories.map((c) => `<Category>${c}</Category>`).join('')}</Categories>`
     : '';
   return `<?xml version="1.0" encoding="utf-8"?>
 <Castable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02"
@@ -69,7 +78,7 @@ export const castableXml = (
           ${opts.icon ? `Icon="${opts.icon}"` : ''}
           IsAssail="false" Reflectable="false" BreakStealth="false"
           IncludeInMetafile="true" PvpOnly="false">${metaComment}
-  <Name>${name}</Name>
+  <Name>${name}</Name>${categories}
 </Castable>`;
 };
 

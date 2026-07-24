@@ -33,7 +33,7 @@ const baseName = (rel: string): string => rel.slice(rel.lastIndexOf('/') + 1);
 function accumulateCategories(
   content: string,
   fallbackName: string,
-  catMap: Record<string, { count: number; usedBy: string[] }>,
+  catMap: Record<string, { count: number; usedBy: string[]; members: string[] }>,
 ): void {
   const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content) || /\bName="([^"]+)"/.exec(content);
   const itemName = nameMatch && nameMatch[1] ? nameMatch[1].trim() : fallbackName;
@@ -42,9 +42,11 @@ function accumulateCategories(
   const body = catSection[1];
   const record = (c: string): void => {
     if (!c) return;
-    if (!catMap[c]) catMap[c] = { count: 0, usedBy: [] };
+    if (!catMap[c]) catMap[c] = { count: 0, usedBy: [], members: [] };
     catMap[c].count++;
+    // usedBy stays a capped sample; members is the full, uncapped list.
     if (catMap[c].usedBy.length < 5) catMap[c].usedBy.push(itemName);
+    catMap[c].members.push(itemName);
   };
   const catElemRegex = /<Category\b[^>]*>([^<]+)<\/Category>/g;
   const catAttrRegex = /<Category\b[^>]*\bName="([^"]+)"/g;
@@ -55,11 +57,27 @@ function accumulateCategories(
 
 /** Build the sorted CategoryDetail[] from an accumulated category map. */
 function categoryDetailsFrom(
-  catMap: Record<string, { count: number; usedBy: string[] }>,
+  catMap: Record<string, { count: number; usedBy: string[]; members: string[] }>,
 ): CategoryDetail[] {
   return Object.entries(catMap)
     .map(([name, { count, usedBy }]) => ({ name, count, usedBy: count < 5 ? usedBy : [] }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Build a category name -> full member-name list from an accumulated category
+ * map. Unlike CategoryDetail.usedBy (a 5-item sample), this is the complete,
+ * deduped, sorted member list — used to resolve a category to every castable in
+ * it (e.g. spellbook expansion in Creidhne).
+ */
+function categoryMembersFrom(
+  catMap: Record<string, { count: number; usedBy: string[]; members: string[] }>,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [name, { members }] of Object.entries(catMap)) {
+    out[name] = [...new Set(members)].sort((a, b) => a.localeCompare(b));
+  }
+  return out;
 }
 
 /** Types whose identifier is an XML attribute on the root element. */
@@ -217,6 +235,8 @@ export async function buildSection(
 
   // Cross-refs + aggregates this scan may populate
   const castableClasses: Record<string, string> = {};
+  const castableIcons: Record<string, number> = {};
+  const castableBooks: Record<string, string> = {};
   const statusCasters: Record<string, string[]> = {};
   const npcResponseCalls: Record<string, string> = {};
   const npcStringKeys: NpcStringKey[] = [];
@@ -233,7 +253,7 @@ export async function buildSection(
   const itemWeaponDamage: Record<string, { smallMin: number; smallMax: number; largeMin: number; largeMax: number }> = {};
   // Aggregates folded into this single read pass (formerly separate re-reads of
   // every file): category usage, vendor tabs, element names.
-  const catMap: Record<string, { count: number; usedBy: string[] }> = {};
+  const catMap: Record<string, { count: number; usedBy: string[]; members: string[] }> = {};
   const vendorTabSet = new Set<string>();
   const elementNameSet = new Set<string>();
   const addName = (name: string): boolean => {
@@ -296,6 +316,12 @@ export async function buildSection(
           recordName(name);
           const classMatch = /<Castable[^>]+Class="([^"]*)"/.exec(content);
           if (classMatch && classMatch[1] != null) castableClasses[name] = classMatch[1].trim();
+          // Icon id + Book (root attrs) — used to render castable icons in UIs
+          // that only have the name to hand (e.g. Creidhne's spellbook preview).
+          const iconMatch = /<Castable[^>]+\bIcon="(\d+)"/.exec(content);
+          if (iconMatch && iconMatch[1] != null) castableIcons[name] = parseInt(iconMatch[1], 10);
+          const bookMatch = /<Castable[^>]+\bBook="([^"]*)"/.exec(content);
+          if (bookMatch && bookMatch[1] != null) castableBooks[name] = bookMatch[1].trim();
           const statusesMatch = /<Statuses>([\s\S]*?)<\/Statuses>/.exec(content);
           if (statusesMatch && statusesMatch[1]) {
             const addRegex = /<Add[^>]*>([^<]+)<\/Add>/g;
@@ -524,6 +550,8 @@ export async function buildSection(
 
   if (type === 'castables') {
     fields.castableClasses = castableClasses;
+    fields.castableIcons = castableIcons;
+    fields.castableBooks = castableBooks;
     fields.statusCasters = statusCasters;
     fields.formulaUsedByCastables = formulaUsedByCastables;
     fields.castableRequiredLevels = castableRequiredLevels;
@@ -540,6 +568,7 @@ export async function buildSection(
     const details = categoryDetailsFrom(catMap);
     fields.castableCategories = details.map((c) => c.name);
     fields.castableCategoryDetails = details;
+    fields.castableCategoryMembers = categoryMembersFrom(catMap);
   } else if (type === 'statuses') {
     fields.formulaUsedByStatuses = formulaUsedByStatuses;
     const details = categoryDetailsFrom(catMap);
@@ -657,7 +686,7 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     localizationsNamesByFilename: {}, elementtablesNamesByFilename: {},
     creaturebehaviorsetsNamesByFilename: {}, spawngroupsNamesByFilename: {},
     serverconfigsNamesByFilename: {}, worldmapsNamesByFilename: {},
-    castableFilenames: {}, castableClasses: {}, statusCasters: {},
+    castableFilenames: {}, castableClasses: {}, castableIcons: {}, castableBooks: {}, statusCasters: {},
     castableTrainers: {}, itemVendors: {}, itemLootSets: {},
     formulaUsedByCastables: {}, formulaUsedByStatuses: {},
     castableRequiredLevels: {}, itemWeaponDamage: {},
@@ -666,6 +695,7 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     vendorTabs: [], npcJobs: [], creatureFamilies: [],
     itemCategories: [], castableCategories: [], statusCategories: [],
     itemCategoryDetails: [], castableCategoryDetails: [], statusCategoryDetails: [],
+    castableCategoryMembers: {},
     mapDetails: [], ignoredMapDetails: [],
   };
 }

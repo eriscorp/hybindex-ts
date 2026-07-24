@@ -1,0 +1,59 @@
+# Continuous-integration checks for pull requests and main.
+#
+# This workflow complements publish.yml (which only fires on a published
+# release). It gates every pull request and every push to main on the typecheck,
+# the tests, a coverage floor, and the build. A regression is caught before the
+# merge, not at publish time. Without this workflow, nothing runs the test suite
+# at all, because publish.yml only builds and publishes.
+#
+# The coverage floors live in vitest.config.ts. They are set to just under the
+# measured numbers, so this step fails on a coverage regression as well as on an
+# outright test failure.
+#
+# The runner is ubuntu-latest and Node is 24, to match publish.yml.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# One CI run per ref. A new push cancels the in-flight run for the same
+# branch or pull request.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Test + coverage gate
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Audit (moderate and above)
+        run: npm audit --audit-level=moderate

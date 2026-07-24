@@ -121,6 +121,8 @@ export interface WorldIndex {
   // Castable-specific cross-references
   castableFilenames: Record<string, string>; // display name → filename (active only)
   castableClasses: Record<string, string>; // castable name → space-separated class list
+  castableIcons: Record<string, number>; // castable name → icon id (root Icon attr)
+  castableBooks: Record<string, string>; // castable name → Book (root Book attr; drives icon type)
   statusCasters: Record<string, string[]>; // status name (lowercased) → castables that add it
 
   // NPC-specific cross-references
@@ -174,6 +176,10 @@ export interface WorldIndex {
   itemCategoryDetails: CategoryDetail[];
   castableCategoryDetails: CategoryDetail[];
   statusCategoryDetails: CategoryDetail[];
+  // Castable category -> full, uncapped member-name list. Unlike
+  // castableCategoryDetails.usedBy (a 5-item sample), this resolves a category
+  // to every castable in it. Consumed by spellbook expansion in Creidhne.
+  castableCategoryMembers: Record<string, string[]>;
 
   // Map extended data
   mapDetails: MapDetail[];

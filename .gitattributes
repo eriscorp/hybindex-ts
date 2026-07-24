@@ -1,0 +1,3 @@
+# Normalize all text files to LF in the repository, regardless of contributor
+# OS. Git checks out with LF as well; there is no CRLF working-tree variant.
+* text=auto eol=lf

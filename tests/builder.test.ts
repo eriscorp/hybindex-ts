@@ -124,6 +124,37 @@ describe('buildIndex', () => {
     expect([...index.itemCategoryDetails[0]!.usedBy].sort()).toEqual(['Shield', 'Sword']);
   });
 
+  it('extracts castable icon ids and books by name', async () => {
+    await writeXml(libraryPath, 'castables', 'srad.xml', castableXml('Srad', { icon: 42 }));
+    await writeXml(libraryPath, 'castables', 'plain.xml', castableXml('Plain'));
+    const index = await buildIndex(libraryPath);
+    expect(index.castableIcons.Srad).toBe(42);
+    // No Icon attr → absent from the map (not 0).
+    expect(index.castableIcons.Plain).toBeUndefined();
+    // The fixture sets Book="PrimarySpell" on every castable.
+    expect(index.castableBooks.Srad).toBe('PrimarySpell');
+  });
+
+  it('resolves castableCategoryMembers to the full, uncapped, deduped member list', async () => {
+    // usedBy is capped at 5; castableCategoryMembers must list every member.
+    for (let i = 1; i <= 7; i++) {
+      await writeXml(libraryPath, 'castables', `nuke${i}.xml`, castableXml(`Nuke ${i}`, { categories: ['aoe'] }));
+    }
+    await writeXml(libraryPath, 'castables', 'zap.xml', castableXml('Zap', { categories: ['aoe', 'single'] }));
+    const index = await buildIndex(libraryPath);
+
+    // usedBy stays a capped sample (emptied once count >= 5).
+    const aoeDetail = index.castableCategoryDetails.find((c) => c.name === 'aoe');
+    expect(aoeDetail!.count).toBe(8);
+    expect(aoeDetail!.usedBy).toEqual([]);
+
+    // members is the complete, sorted list — all 8 in 'aoe', 'Zap' in both.
+    expect(index.castableCategoryMembers.aoe).toEqual([
+      'Nuke 1', 'Nuke 2', 'Nuke 3', 'Nuke 4', 'Nuke 5', 'Nuke 6', 'Nuke 7', 'Zap',
+    ]);
+    expect(index.castableCategoryMembers.single).toEqual(['Zap']);
+  });
+
   it('scans vendor tabs from items', async () => {
     await writeXml(libraryPath, 'items', 'sword.xml', itemXml('Sword', { shopTab: 'Weapons' }));
     await writeXml(libraryPath, 'items', 'potion.xml', itemXml('Potion', { shopTab: 'Potions' }));

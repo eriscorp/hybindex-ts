@@ -30,9 +30,12 @@ const FIELD_TO_FILE: Record<string, string> = {
   castablesNamesByFilename: 'castables',
   castableFilenames: 'castables',
   castableClasses: 'castables',
+  castableIcons: 'castables',
+  castableBooks: 'castables',
   statusCasters: 'castables',
   castableCategories: 'castables',
   castableCategoryDetails: 'castables',
+  castableCategoryMembers: 'castables',
   formulaUsedByCastables: 'castables',
   castableRequiredLevels: 'castables',
 
