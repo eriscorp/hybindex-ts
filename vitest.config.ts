@@ -19,15 +19,16 @@ export default defineConfig({
         // against regression without blocking work. Raise them as coverage
         // improves; do not lower them to make a red build pass.
         //
-        // Measure with `npm run test:coverage`. The tests run entirely against
-        // temp dirs and the `HYBINDEX_CACHE_DIR` override, so local and CI
-        // numbers match — there is no real-asset skip case to reproduce.
+        // Measure with `npm run test:coverage`. The floors are calibrated to
+        // the CI case (Linux), which is the lower of the two: on Windows the
+        // `win32` arm of `resolveCacheBase` in paths.ts runs and reports higher
+        // function coverage, but the Linux runner never executes that arm.
         //
-        // Baseline on this commit: statements 87.47, branches 66.74,
-        // functions 91.02, lines 89.98.
+        // CI baseline (Linux) on this commit: statements 87.31, branches 66.74,
+        // functions 89.74, lines 89.98.
         lines: 89,
         branches: 65,
-        functions: 90,
+        functions: 89,
         statements: 86,
       },
     },
