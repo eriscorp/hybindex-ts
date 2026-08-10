@@ -2,12 +2,15 @@ import { join } from 'path';
 import type {
   BuildOptions,
   CategoryDetail,
+  DuplicateNames,
   IndexType,
   MapDetail,
   NpcStringKey,
   WorldIndex,
 } from './types.js';
 import { INDEX_TYPES } from './types.js';
+import { duplicateNamesKey, nameCollisionKey } from './names.js';
+import { xmlText } from './xmltext.js';
 import { fieldsForType, loadIndex } from './storage.js';
 import {
   SCRIPTS_KEY,
@@ -36,7 +39,7 @@ function accumulateCategories(
   catMap: Record<string, { count: number; usedBy: string[]; members: string[] }>,
 ): void {
   const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content) || /\bName="([^"]+)"/.exec(content);
-  const itemName = nameMatch && nameMatch[1] ? nameMatch[1].trim() : fallbackName;
+  const itemName = xmlText(nameMatch?.[1]) || fallbackName;
   const catSection = /<Categories[^>]*>([\s\S]*?)<\/Categories>/.exec(content);
   if (!catSection || !catSection[1]) return;
   const body = catSection[1];
@@ -51,8 +54,8 @@ function accumulateCategories(
   const catElemRegex = /<Category\b[^>]*>([^<]+)<\/Category>/g;
   const catAttrRegex = /<Category\b[^>]*\bName="([^"]+)"/g;
   let m;
-  while ((m = catElemRegex.exec(body)) !== null) record((m[1] ?? '').trim());
-  while ((m = catAttrRegex.exec(body)) !== null) record((m[1] ?? '').trim());
+  while ((m = catElemRegex.exec(body)) !== null) record(xmlText(m[1]));
+  while ((m = catAttrRegex.exec(body)) !== null) record(xmlText(m[1]));
 }
 
 /** Build the sorted CategoryDetail[] from an accumulated category map. */
@@ -163,7 +166,7 @@ async function readArchived(
   for (let i = 0; i < rels.length; i++) {
     const content = contents[i];
     if (content == null) continue;
-    const n = nameRegex.exec(content)?.[1]?.trim();
+    const n = xmlText(nameRegex.exec(content)?.[1]);
     if (!n) continue;
     if (!nameSet.has(n)) {
       nameSet.add(n);
@@ -188,10 +191,56 @@ function parseMapDetail(content: string, rel: string): MapDetail | null {
   const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
   return {
     id: parseInt(idMatch[1], 10),
-    name: nameMatch && nameMatch[1] ? nameMatch[1].trim() : '',
+    name: xmlText(nameMatch?.[1]),
     filename: rel,
     x: parseInt(xMatch[1], 10),
     y: parseInt(yMatch[1], 10),
+  };
+}
+
+/** An `xs:float` attribute value, including the `.5` and `1e2` spellings. */
+const FLOAT = String.raw`[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?`;
+
+const damageAttr = (name: string, attrs: string): number | null => {
+  const m = new RegExp(String.raw`\b${name}="(${FLOAT})"`).exec(attrs);
+  if (!m?.[1]) return null;
+  const value = Number(m[1]);
+  return Number.isFinite(value) ? value : null;
+};
+
+/**
+ * Read an item's `<Damage>` attributes. Returns null for an item that has no
+ * `<Damage>` element — most items — and for one whose required attributes are
+ * missing or unparsable.
+ *
+ * Three rules here, each of which used to drop a weapon out of the index
+ * silently, with no error and no way to tell an absent weapon from a
+ * non-weapon:
+ *
+ * - **Both element forms count.** `<Damage …/>` and `<Damage …></Damage>` are
+ *   the same element. `ItemDamage` in Item.xsd declares attributes and no child
+ *   content, so an editor may write either.
+ * - **A zero is a value.** `SmallMin="0"` captures the string `"0"`, which is
+ *   falsy — a truthiness guard drops any weapon whose minimum is legitimately 0.
+ *   Presence is what matters, so every test here is against null.
+ * - **Only SmallMin/SmallMax are required.** Item.xsd marks LargeMin/LargeMax
+ *   optional with a default of 0.0, and `world` has a weapon that relies on it
+ *   (`weapon_oak-stick.xml`). Requiring all four dropped it.
+ */
+function parseItemDamage(
+  content: string,
+): { smallMin: number; smallMax: number; largeMin: number; largeMax: number } | null {
+  const dmgMatch = /<Damage\b([^>]*?)\/?>/.exec(content);
+  if (!dmgMatch || dmgMatch[1] == null) return null;
+  const attrs = dmgMatch[1];
+  const smallMin = damageAttr('SmallMin', attrs);
+  const smallMax = damageAttr('SmallMax', attrs);
+  if (smallMin == null || smallMax == null) return null;
+  return {
+    smallMin,
+    smallMax,
+    largeMin: damageAttr('LargeMin', attrs) ?? 0,
+    largeMax: damageAttr('LargeMax', attrs) ?? 0,
   };
 }
 
@@ -262,6 +311,17 @@ export async function buildSection(
     names.push(name);
     return true;
   };
+  // Collision key → the active files claiming that name. Recorded BEFORE the
+  // dedup guards below, which drop a repeat name silently — the drop is exactly
+  // the condition being reported. Keyed case-insensitively because the server's
+  // name index is; `names` itself stays case-sensitive and unchanged.
+  const claimsByName = new Map<string, string[]>();
+  const claimName = (name: string, rel: string): void => {
+    const key = nameCollisionKey(name);
+    const claims = claimsByName.get(key);
+    if (!claims) claimsByName.set(key, [rel]);
+    else if (!claims.includes(rel)) claims.push(rel);
+  };
 
   // Recursive: subdirectories under a type dir are legal on disk (the server
   // loads them). `active`/`archived` are type-relative paths — `fire/blast.xml`,
@@ -295,7 +355,7 @@ export async function buildSection(
       shopTabRegex.lastIndex = 0;
       let vt;
       while ((vt = shopTabRegex.exec(content)) !== null) {
-        const v = (vt[1] ?? '').trim();
+        const v = xmlText(vt[1]);
         if (v) vendorTabSet.add(v);
       }
     }
@@ -303,7 +363,7 @@ export async function buildSection(
       elementRegex.lastIndex = 0;
       let em;
       while ((em = elementRegex.exec(content)) !== null) {
-        const v = (em[1] ?? '').trim();
+        const v = xmlText(em[1]);
         if (v) elementNameSet.add(v);
       }
     }
@@ -311,23 +371,24 @@ export async function buildSection(
     if (type === 'castables') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
-        const name = nameMatch[1].trim();
+        const name = xmlText(nameMatch[1]);
+        if (name) claimName(name, rel);
         if (name && !nameSet.has(name)) {
           recordName(name);
           const classMatch = /<Castable[^>]+Class="([^"]*)"/.exec(content);
-          if (classMatch && classMatch[1] != null) castableClasses[name] = classMatch[1].trim();
+          if (classMatch && classMatch[1] != null) castableClasses[name] = xmlText(classMatch[1]);
           // Icon id + Book (root attrs) — used to render castable icons in UIs
           // that only have the name to hand (e.g. Creidhne's spellbook preview).
           const iconMatch = /<Castable[^>]+\bIcon="(\d+)"/.exec(content);
           if (iconMatch && iconMatch[1] != null) castableIcons[name] = parseInt(iconMatch[1], 10);
           const bookMatch = /<Castable[^>]+\bBook="([^"]*)"/.exec(content);
-          if (bookMatch && bookMatch[1] != null) castableBooks[name] = bookMatch[1].trim();
+          if (bookMatch && bookMatch[1] != null) castableBooks[name] = xmlText(bookMatch[1]);
           const statusesMatch = /<Statuses>([\s\S]*?)<\/Statuses>/.exec(content);
           if (statusesMatch && statusesMatch[1]) {
             const addRegex = /<Add[^>]*>([^<]+)<\/Add>/g;
             let am;
             while ((am = addRegex.exec(statusesMatch[1])) !== null) {
-              const key = (am[1] ?? '').trim().toLowerCase();
+              const key = xmlText(am[1]).toLowerCase();
               if (key) {
                 if (!statusCasters[key]) statusCasters[key] = [];
                 if (!statusCasters[key].includes(name)) statusCasters[key].push(name);
@@ -358,14 +419,17 @@ export async function buildSection(
     } else if (type === 'localizations') {
       const localeMatch = /\bLocale="([^"]+)"/.exec(content);
       if (localeMatch && localeMatch[1]) {
-        const name = localeMatch[1].trim();
-        if (name) recordName(name);
+        const name = xmlText(localeMatch[1]);
+        if (name) {
+          claimName(name, rel);
+          recordName(name);
+        }
       }
       const npcCallRegex = /<Response[^>]+Call="([^"]+)"[^>]*>([^<]*)<\/Response>/g;
       let callMatch;
       while ((callMatch = npcCallRegex.exec(content)) !== null) {
-        const call = (callMatch[1] ?? '').trim();
-        if (call) npcResponseCalls[call] = (callMatch[2] ?? '').trim();
+        const call = xmlText(callMatch[1]);
+        if (call) npcResponseCalls[call] = xmlText(callMatch[2]);
       }
       for (const [label, sectionRegex] of localizationSections) {
         const sectionMatch = sectionRegex.exec(content);
@@ -373,8 +437,8 @@ export async function buildSection(
         const strRegex = /<String[^>]+Key="([^"]+)"[^>]*>([^<]*)<\/String>/g;
         let sm;
         while ((sm = strRegex.exec(sectionMatch[0])) !== null) {
-          const key = (sm[1] ?? '').trim();
-          const message = (sm[2] ?? '').trim();
+          const key = xmlText(sm[1]);
+          const message = xmlText(sm[2]);
           if (!key) continue;
           const seenKey = `${label}\u0000${key}`;
           if (!npcStringKeySet.has(seenKey)) {
@@ -386,13 +450,14 @@ export async function buildSection(
     } else if (type === 'creatures') {
       const nameMatch = /\bName="([^"]+)"/.exec(content);
       if (nameMatch && nameMatch[1]) {
-        const name = nameMatch[1].trim();
+        const name = xmlText(nameMatch[1]);
+        if (name) claimName(name, rel);
         if (name && !nameSet.has(name)) recordName(name);
       }
       const typeRegex = /<Type[^>]+Name="([^"]+)"/g;
       let tm;
       while ((tm = typeRegex.exec(content)) !== null) {
-        const tn = (tm[1] ?? '').trim();
+        const tn = xmlText(tm[1]);
         if (tn && !creatureTypesSet.has(tn)) {
           creatureTypesSet.add(tn);
           creatureTypes.push(tn);
@@ -403,8 +468,9 @@ export async function buildSection(
       // per entry. Keep the names list sorted for the `index.maps` field.
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
-        const name = nameMatch[1].trim();
+        const name = xmlText(nameMatch[1]);
         if (name) {
+          claimName(name, rel);
           addName(name);
           const detail = parseMapDetail(content, rel);
           if (detail) mapDetails.push(detail);
@@ -413,7 +479,8 @@ export async function buildSection(
     } else if (attrNameRegex) {
       const match = attrNameRegex.exec(content);
       if (match && match[1]) {
-        const name = match[1].trim();
+        const name = xmlText(match[1]);
+        if (name) claimName(name, rel);
         if (name && !nameSet.has(name)) recordName(name);
         // Statuses encode formula references under meta.formulaNames per block
         // (onApply/onTick/onRemove × heal/damage). Extract and reverse-index.
@@ -441,7 +508,7 @@ export async function buildSection(
             const itemRegex = /<Item[^>]*>([^<]+)<\/Item>/g;
             let im;
             while ((im = itemRegex.exec(body)) !== null) {
-              const key = (im[1] ?? '').trim().toLowerCase();
+              const key = xmlText(im[1]).toLowerCase();
               if (key) {
                 if (!itemLootSets[key]) itemLootSets[key] = [];
                 if (!itemLootSets[key].includes(name)) itemLootSets[key].push(name);
@@ -453,7 +520,8 @@ export async function buildSection(
     } else if (type === 'npcs') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
-        const npcName = nameMatch[1].trim();
+        const npcName = xmlText(nameMatch[1]);
+        if (npcName) claimName(npcName, rel);
         if (npcName && !nameSet.has(npcName)) {
           recordName(npcName);
           const trainMatch = /<Train>([\s\S]*?)<\/Train>/.exec(content);
@@ -461,7 +529,7 @@ export async function buildSection(
             const castableRegex = /<Castable[^>]+Name="([^"]+)"/g;
             let cm;
             while ((cm = castableRegex.exec(trainMatch[1])) !== null) {
-              const key = (cm[1] ?? '').trim().toLowerCase();
+              const key = xmlText(cm[1]).toLowerCase();
               if (key) {
                 if (!castableTrainers[key]) castableTrainers[key] = [];
                 if (!castableTrainers[key].includes(npcName)) castableTrainers[key].push(npcName);
@@ -473,7 +541,7 @@ export async function buildSection(
             const vendItemRegex = /<Item[^>]+Name="([^"]+)"/g;
             let vm;
             while ((vm = vendItemRegex.exec(vendMatch[1])) !== null) {
-              const key = (vm[1] ?? '').trim().toLowerCase();
+              const key = xmlText(vm[1]).toLowerCase();
               if (key) {
                 if (!itemVendors[key]) itemVendors[key] = [];
                 if (!itemVendors[key].includes(npcName)) itemVendors[key].push(npcName);
@@ -485,7 +553,8 @@ export async function buildSection(
     } else if (type === 'variantgroups' || type === 'worldmaps') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
-        const name = nameMatch[1].trim();
+        const name = xmlText(nameMatch[1]);
+        if (name) claimName(name, rel);
         if (name && !nameSet.has(name)) recordName(name);
       }
     } else {
@@ -496,32 +565,21 @@ export async function buildSection(
       let match;
       let firstName: string | null = null;
       while ((match = nameRegex.exec(content)) !== null) {
-        const name = (match[1] ?? '').trim();
+        const name = xmlText(match[1]);
         if (name) addName(name);
         if (name && firstName === null) firstName = name;
       }
-      if (firstName) namesByFilename[rel] = firstName;
+      if (firstName) {
+        claimName(firstName, rel);
+        namesByFilename[rel] = firstName;
+      }
 
       // Items: capture <Damage SmallMin/SmallMax/LargeMin/LargeMax/> attrs
       // when present (only weapons have it). Used by the damage calculator
       // to auto-populate weapon ranges from a referenced item.
       if (type === 'items' && firstName) {
-        const dmgMatch = /<Damage\b([^>]*)\/>/.exec(content);
-        if (dmgMatch && dmgMatch[1]) {
-          const attrs = dmgMatch[1];
-          const sMin = /\bSmallMin="(-?\d+(?:\.\d+)?)"/.exec(attrs);
-          const sMax = /\bSmallMax="(-?\d+(?:\.\d+)?)"/.exec(attrs);
-          const lMin = /\bLargeMin="(-?\d+(?:\.\d+)?)"/.exec(attrs);
-          const lMax = /\bLargeMax="(-?\d+(?:\.\d+)?)"/.exec(attrs);
-          if (sMin?.[1] && sMax?.[1] && lMin?.[1] && lMax?.[1]) {
-            itemWeaponDamage[firstName] = {
-              smallMin: Number(sMin[1]),
-              smallMax: Number(sMax[1]),
-              largeMin: Number(lMin[1]),
-              largeMax: Number(lMax[1]),
-            };
-          }
-        }
+        const damage = parseItemDamage(content);
+        if (damage) itemWeaponDamage[firstName] = damage;
       }
     }
 
@@ -547,6 +605,16 @@ export async function buildSection(
   const fields: Record<string, unknown> = { [type]: names };
   if (type !== 'maps') fields[namesByFilenameKey(type)] = namesByFilename;
   if (archRegex) fields[archivedKey(type)] = archivedNames;
+
+  // Collision report. A grouping over names already in memory, so it costs
+  // nothing beyond the map itself, and it is emitted for every type — including
+  // the ones whose name is an attribute, which a survey by <Name> element
+  // cannot see.
+  const duplicateNames: DuplicateNames = {};
+  for (const [key, claims] of claimsByName) {
+    if (claims.length > 1) duplicateNames[key] = claims;
+  }
+  fields[duplicateNamesKey(type)] = duplicateNames;
 
   if (type === 'castables') {
     fields.castableClasses = castableClasses;
@@ -686,6 +754,13 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     localizationsNamesByFilename: {}, elementtablesNamesByFilename: {},
     creaturebehaviorsetsNamesByFilename: {}, spawngroupsNamesByFilename: {},
     serverconfigsNamesByFilename: {}, worldmapsNamesByFilename: {},
+    castablesDuplicateNames: {}, creaturesDuplicateNames: {},
+    creaturebehaviorsetsDuplicateNames: {}, elementtablesDuplicateNames: {},
+    itemsDuplicateNames: {}, localizationsDuplicateNames: {},
+    lootsetsDuplicateNames: {}, mapsDuplicateNames: {}, nationsDuplicateNames: {},
+    npcsDuplicateNames: {}, recipesDuplicateNames: {}, serverconfigsDuplicateNames: {},
+    spawngroupsDuplicateNames: {}, statusesDuplicateNames: {},
+    variantgroupsDuplicateNames: {}, worldmapsDuplicateNames: {},
     castableFilenames: {}, castableClasses: {}, castableIcons: {}, castableBooks: {}, statusCasters: {},
     castableTrainers: {}, itemVendors: {}, itemLootSets: {},
     formulaUsedByCastables: {}, formulaUsedByStatuses: {},

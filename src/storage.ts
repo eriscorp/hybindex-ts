@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { dirname } from 'path';
 import type { IndexType, WorldIndex } from './types.js';
 import { INDEX_TYPES } from './types.js';
 import {
@@ -6,7 +7,9 @@ import {
   getIndexDir,
   getIndexFilePath,
   getInWorldIndexFilePath,
+  getLegacyCacheBase,
   getLegacyIndexPath,
+  resolveCacheBase,
 } from './paths.js';
 import {
   computeFileCache,
@@ -28,6 +31,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   castables: 'castables',
   archivedCastables: 'castables',
   castablesNamesByFilename: 'castables',
+  castablesDuplicateNames: 'castables',
   castableFilenames: 'castables',
   castableClasses: 'castables',
   castableIcons: 'castables',
@@ -43,6 +47,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   statuses: 'statuses',
   archivedStatuses: 'statuses',
   statusesNamesByFilename: 'statuses',
+  statusesDuplicateNames: 'statuses',
   statusCategories: 'statuses',
   statusCategoryDetails: 'statuses',
   formulaUsedByStatuses: 'statuses',
@@ -51,6 +56,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   items: 'items',
   archivedItems: 'items',
   itemsNamesByFilename: 'items',
+  itemsDuplicateNames: 'items',
   itemCategories: 'items',
   itemCategoryDetails: 'items',
   vendorTabs: 'items',
@@ -60,6 +66,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   creatures: 'creatures',
   archivedCreatures: 'creatures',
   creaturesNamesByFilename: 'creatures',
+  creaturesDuplicateNames: 'creatures',
   creatureTypes: 'creatures',
   creatureFamilies: 'creatures',
 
@@ -67,6 +74,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   npcs: 'npcs',
   archivedNpcs: 'npcs',
   npcsNamesByFilename: 'npcs',
+  npcsDuplicateNames: 'npcs',
   npcJobs: 'npcs',
   castableTrainers: 'npcs',
   itemVendors: 'npcs',
@@ -75,27 +83,32 @@ const FIELD_TO_FILE: Record<string, string> = {
   nations: 'nations',
   archivedNations: 'nations',
   nationsNamesByFilename: 'nations',
+  nationsDuplicateNames: 'nations',
 
   // lootsets
   lootsets: 'lootsets',
   archivedLootsets: 'lootsets',
   lootsetsNamesByFilename: 'lootsets',
+  lootsetsDuplicateNames: 'lootsets',
   itemLootSets: 'lootsets',
 
   // recipes
   recipes: 'recipes',
   archivedRecipes: 'recipes',
   recipesNamesByFilename: 'recipes',
+  recipesDuplicateNames: 'recipes',
 
   // variantgroups
   variantgroups: 'variantgroups',
   archivedVariantgroups: 'variantgroups',
   variantgroupsNamesByFilename: 'variantgroups',
+  variantgroupsDuplicateNames: 'variantgroups',
 
   // localizations
   localizations: 'localizations',
   archivedLocalizations: 'localizations',
   localizationsNamesByFilename: 'localizations',
+  localizationsDuplicateNames: 'localizations',
   npcResponseCalls: 'localizations',
   npcStringKeys: 'localizations',
 
@@ -103,31 +116,37 @@ const FIELD_TO_FILE: Record<string, string> = {
   elementtables: 'elementtables',
   archivedElementtables: 'elementtables',
   elementtablesNamesByFilename: 'elementtables',
+  elementtablesDuplicateNames: 'elementtables',
   elementnames: 'elementtables',
 
   // creaturebehaviorsets
   creaturebehaviorsets: 'creaturebehaviorsets',
   archivedCreaturebehaviorsets: 'creaturebehaviorsets',
   creaturebehaviorsetsNamesByFilename: 'creaturebehaviorsets',
+  creaturebehaviorsetsDuplicateNames: 'creaturebehaviorsets',
 
   // spawngroups
   spawngroups: 'spawngroups',
   archivedSpawngroups: 'spawngroups',
   spawngroupsNamesByFilename: 'spawngroups',
+  spawngroupsDuplicateNames: 'spawngroups',
 
   // serverconfigs
   serverconfigs: 'serverconfigs',
   archivedServerconfigs: 'serverconfigs',
   serverconfigsNamesByFilename: 'serverconfigs',
+  serverconfigsDuplicateNames: 'serverconfigs',
 
   // maps
   maps: 'maps',
+  mapsDuplicateNames: 'maps',
   mapDetails: 'maps',
   ignoredMapDetails: 'maps',
 
   // worldmaps
   worldmaps: 'worldmaps',
   worldmapsNamesByFilename: 'worldmaps',
+  worldmapsDuplicateNames: 'worldmaps',
 
   // _meta (catch-all)
   libraryPath: '_meta',
@@ -192,6 +211,57 @@ export async function cleanupInWorldIndex(libraryPath: string): Promise<void> {
   ]);
 }
 
+// ── Vendor directory case migration (pre-1.1.0 → 1.1.0) ─────────────────────
+
+/**
+ * Move the pre-1.1.0 lowercase vendor directory to the capitalized spelling the
+ * rest of the house uses: `~/.config/erisco/hybindex` → `~/.config/Erisco/hybindex`.
+ *
+ * Only Linux ever moves anything. Windows never wrote the lowercase form. macOS
+ * wrote it, but its filesystem is case-insensitive, so the destination already
+ * exists there, the guard skips, and nothing is renamed — which is the right
+ * answer, because the two spellings name one directory. A rename that
+ * "succeeded" on macOS would be the failure, not the success.
+ *
+ * Skips when the capitalized base already exists, which is also the state
+ * during the window where one consumer has upgraded and the other has not: both
+ * directories stand, each app reads its own, and the split closes when the
+ * second app upgrades.
+ *
+ * Best effort and idempotent. The index is a rebuildable cache, so a failed
+ * rename costs a rebuild and nothing else. Called automatically wherever this
+ * package creates its cache directory; exported so an app can also run it once
+ * at startup.
+ */
+export async function migrateLegacyCacheBase(): Promise<void> {
+  const legacy = getLegacyCacheBase();
+  if (legacy === null) return;
+  const current = resolveCacheBase();
+  if (legacy === current) return;
+  try {
+    await fs.stat(legacy);
+  } catch {
+    return; // nothing to move
+  }
+  try {
+    await fs.stat(current);
+    return; // destination in use — leave both alone
+  } catch { /* absent, so the rename is unambiguous */ }
+  try {
+    await fs.mkdir(dirname(current), { recursive: true });
+    await fs.rename(legacy, current);
+    // Drop the now-empty lowercase vendor directory. rmdir refuses a non-empty
+    // one, so anything else that lives there is safe.
+    await fs.rmdir(dirname(legacy)).catch(() => { /* not empty, or gone */ });
+  } catch { /* best effort */ }
+}
+
+/** Create this library's cache directory, migrating the vendor dir case first. */
+async function ensureIndexDir(libraryPath: string): Promise<void> {
+  await migrateLegacyCacheBase();
+  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -223,7 +293,7 @@ export async function loadIndex(libraryPath: string): Promise<WorldIndex | null>
  * rebuilds) and clears any stale pre-0.3.0 index from the world folder.
  */
 export async function saveIndex(libraryPath: string, index: WorldIndex): Promise<void> {
-  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
+  await ensureIndexDir(libraryPath);
   const groups = splitByFile(index);
   for (const [fileName, data] of Object.entries(groups)) {
     await writeJson(getIndexFilePath(libraryPath, fileName), data);
@@ -252,7 +322,7 @@ export async function saveSection(
   type: IndexType,
   fields: Record<string, unknown>,
 ): Promise<void> {
-  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
+  await ensureIndexDir(libraryPath);
   // Group the fields by owning file — a single section may touch more than
   // its own file (e.g. items owns items.json fields plus vendorTabs there).
   // Since FIELD_TO_FILE encodes the ownership, reuse it.
@@ -329,5 +399,5 @@ export async function getIndexStatus(
 
 /** Ensure the local cache directory for this library exists. */
 export async function ensureCreidhneDir(libraryPath: string): Promise<void> {
-  await fs.mkdir(getIndexDir(libraryPath), { recursive: true });
+  await ensureIndexDir(libraryPath);
 }

@@ -1,20 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import {
   buildIndex,
   buildSection,
   cleanupInWorldIndex,
   deleteIndex,
+  duplicateNamesFor,
   fieldsForType,
   getCreidhneDir,
   getIndexDir,
   getIndexFilePath,
   getIndexStatus,
+  getLegacyCacheBase,
   getLegacyIndexPath,
   INDEX_TYPES,
   loadIndex,
+  migrateLegacyCacheBase,
   resolveCacheBase,
   saveIndex,
   saveSection,
@@ -230,6 +233,28 @@ describe('path helpers', () => {
     expect(worldKey(worldXml)).toBe(k1);
   });
 
+  it('spells the vendor directory Erisco on every platform', () => {
+    // hybindex was the one thing in the house that lowercased it, and only off
+    // Windows — invisible until somebody used Linux, where case matters.
+    delete process.env.HYBINDEX_CACHE_DIR;
+    const segments = resolveCacheBase().split(/[\\/]/);
+    expect(segments).toContain('Erisco');
+    expect(segments).not.toContain('erisco');
+  });
+
+  it('getLegacyCacheBase names the old spelling only where one can exist', () => {
+    expect(getLegacyCacheBase()).toBeNull(); // HYBINDEX_CACHE_DIR overrides the base
+    delete process.env.HYBINDEX_CACHE_DIR;
+    const legacy = getLegacyCacheBase();
+    if (process.platform === 'win32') {
+      // Windows never wrote the lowercase form, so there is nothing to move.
+      expect(legacy).toBeNull();
+    } else {
+      expect(legacy).toBe(join(homedir(), '.config', 'erisco', 'hybindex'));
+      expect(legacy).not.toBe(resolveCacheBase());
+    }
+  });
+
   it('fieldsForType returns the keys owned by a type', () => {
     const castableFields = fieldsForType('castables');
     expect(castableFields).toContain('castables');
@@ -249,5 +274,133 @@ describe('path helpers', () => {
         expect(owned, `${type} emits unowned field "${key}"`).toContain(key);
       }
     }
+  });
+});
+
+// ── Vendor directory case migration ─────────────────────────────────────────
+
+describe('migrateLegacyCacheBase', () => {
+  it('does nothing while HYBINDEX_CACHE_DIR overrides the base', async () => {
+    await expect(migrateLegacyCacheBase()).resolves.toBeUndefined();
+  });
+
+  it.runIf(process.platform === 'win32')('is inert on Windows, which never wrote the old spelling', async () => {
+    delete process.env.HYBINDEX_CACHE_DIR;
+    const home = await fs.mkdtemp(join(tmpdir(), 'hybindex-home-'));
+    const priorLocal = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = home;
+    const decoy = join(home, 'erisco', 'hybindex');
+    await fs.mkdir(decoy, { recursive: true });
+    try {
+      await expect(migrateLegacyCacheBase()).resolves.toBeUndefined();
+      // Even a hand-made lowercase directory is left where it stands: on NTFS
+      // the two spellings are one directory, so there is nothing to move.
+      await expect(fs.access(decoy)).resolves.toBeUndefined();
+    } finally {
+      if (priorLocal === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = priorLocal;
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  // Only Linux ever moves anything, so only Linux can test the move. On macOS
+  // the two spellings name one directory and the guard must decline; on Windows
+  // the lowercase form never existed. `os.homedir()` reads $HOME on POSIX, which
+  // is what lets this run against a temp home instead of the real one.
+  describe.skipIf(process.platform === 'win32')('on a case-sensitive filesystem', () => {
+    let home: string;
+    let priorHome: string | undefined;
+
+    beforeEach(async () => {
+      delete process.env.HYBINDEX_CACHE_DIR;
+      priorHome = process.env.HOME;
+      home = await fs.mkdtemp(join(tmpdir(), 'hybindex-home-'));
+      process.env.HOME = home;
+    });
+
+    afterEach(async () => {
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+      await fs.rm(home, { recursive: true, force: true });
+    });
+
+    it('renames the lowercase base and drops the emptied vendor directory', async () => {
+      const legacy = getLegacyCacheBase()!;
+      await fs.mkdir(join(legacy, 'v3'), { recursive: true });
+      await fs.writeFile(join(legacy, 'v3', 'marker'), 'x', 'utf-8');
+
+      await migrateLegacyCacheBase();
+
+      const moved = join(resolveCacheBase(), 'v3', 'marker');
+      await expect(fs.readFile(moved, 'utf-8')).resolves.toBe('x');
+      await expect(fs.access(legacy)).rejects.toThrow();
+      // The lowercase vendor directory is gone, not left standing and empty.
+      await expect(fs.access(join(home, '.config', 'erisco'))).rejects.toThrow();
+    });
+
+    it('leaves both alone when the capitalized base is already in use', async () => {
+      // The window where one consumer has upgraded and the other has not.
+      const legacy = getLegacyCacheBase()!;
+      await fs.mkdir(legacy, { recursive: true });
+      await fs.writeFile(join(legacy, 'old'), 'old', 'utf-8');
+      await fs.mkdir(resolveCacheBase(), { recursive: true });
+      await fs.writeFile(join(resolveCacheBase(), 'new'), 'new', 'utf-8');
+
+      await migrateLegacyCacheBase();
+
+      await expect(fs.readFile(join(legacy, 'old'), 'utf-8')).resolves.toBe('old');
+      await expect(fs.readFile(join(resolveCacheBase(), 'new'), 'utf-8')).resolves.toBe('new');
+    });
+
+    it('is a no-op, and does not throw, when there is nothing to move', async () => {
+      await expect(migrateLegacyCacheBase()).resolves.toBeUndefined();
+      await expect(fs.access(resolveCacheBase())).rejects.toThrow();
+    });
+  });
+});
+
+// ── Duplicate name persistence ──────────────────────────────────────────────
+
+describe('duplicate names round-trip', () => {
+  it('survives saveIndex → loadIndex in the type\'s own file', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXml('Ard Sal'));
+
+    const built = await buildIndex(libraryPath);
+    await saveIndex(libraryPath, built);
+
+    const onDisk = JSON.parse(await fs.readFile(getIndexFilePath(libraryPath, 'castables'), 'utf-8'));
+    expect(onDisk.castablesDuplicateNames).toEqual({ 'ard sal': ['a.xml', 'b.xml'] });
+
+    const loaded = await loadIndex(libraryPath);
+    expect(loaded!.castablesDuplicateNames).toEqual({ 'ard sal': ['a.xml', 'b.xml'] });
+  });
+
+  it('clears once the collision is resolved, via saveSection', async () => {
+    await writeXml(libraryPath, 'castables', 'a.xml', castableXml('Ard Sal'));
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXml('Ard Sal'));
+    await saveIndex(libraryPath, await buildIndex(libraryPath));
+
+    await writeXml(libraryPath, 'castables', 'b.xml', castableXml('Beag Sal'));
+    const { fields } = await buildSection(libraryPath, 'castables');
+    await saveSection(libraryPath, 'castables', fields);
+
+    const loaded = await loadIndex(libraryPath);
+    expect(loaded!.castablesDuplicateNames).toEqual({});
+  });
+
+  it('reads back as empty for an index built before the field existed', async () => {
+    // A v3 cache has no duplicate report. duplicateNamesFor must answer {} for
+    // it rather than undefined, so a consumer needs no version check.
+    await writeXml(libraryPath, 'npcs', 'a.xml', castableXml('Unused'));
+    await saveIndex(libraryPath, await buildIndex(libraryPath));
+    const path = getIndexFilePath(libraryPath, 'npcs');
+    const data = JSON.parse(await fs.readFile(path, 'utf-8'));
+    delete data.npcsDuplicateNames;
+    await fs.writeFile(path, JSON.stringify(data), 'utf-8');
+
+    const loaded = await loadIndex(libraryPath);
+    expect(loaded!.npcsDuplicateNames).toBeUndefined();
+    expect(duplicateNamesFor(loaded!, 'npcs')).toEqual({});
   });
 });

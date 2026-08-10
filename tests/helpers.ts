@@ -99,12 +99,25 @@ export const itemXml = (
   opts: {
     shopTab?: string;
     category?: string;
-    damage?: { smallMin: number; smallMax: number; largeMin: number; largeMax: number };
+    /** LargeMin/LargeMax are optional in the schema, so they are optional here. */
+    damage?: { smallMin: number; smallMax: number; largeMin?: number; largeMax?: number };
+    /** Write `<Damage …></Damage>` instead of the self-closing form. */
+    pairedDamage?: boolean;
   } = {},
 ): string => {
-  const dmg = opts.damage
-    ? `<Damage SmallMin="${opts.damage.smallMin}" SmallMax="${opts.damage.smallMax}" LargeMin="${opts.damage.largeMin}" LargeMax="${opts.damage.largeMax}"/>`
+  const damageAttrs = opts.damage
+    ? [
+        `SmallMin="${opts.damage.smallMin}"`,
+        `SmallMax="${opts.damage.smallMax}"`,
+        ...(opts.damage.largeMin != null ? [`LargeMin="${opts.damage.largeMin}"`] : []),
+        ...(opts.damage.largeMax != null ? [`LargeMax="${opts.damage.largeMax}"`] : []),
+      ].join(' ')
     : '';
+  const dmg = !opts.damage
+    ? ''
+    : opts.pairedDamage
+      ? `<Damage ${damageAttrs}></Damage>`
+      : `<Damage ${damageAttrs}/>`;
   return `<?xml version="1.0" encoding="utf-8"?>
 <Item xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02">
   <Name>${name}</Name>

@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { buildIndex, buildSection, saveIndex } from '../src/index.js';
+import {
+  buildIndex,
+  buildSection,
+  duplicateNamesFor,
+  nameCollisionKey,
+  saveIndex,
+} from '../src/index.js';
 import {
   castableXml,
   castableXmlWithRequirement,
@@ -291,6 +297,50 @@ describe('item weapon damage', () => {
 
   it('omits non-weapon items entirely', async () => {
     await writeXml(libraryPath, 'items', 'potion.xml', itemXml('Potion'));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({});
+  });
+
+  // The three ways a weapon used to vanish out of the index with no error and
+  // no way to tell it apart from an item that is not a weapon.
+
+  it('reads the paired <Damage></Damage> form, not only the self-closing one', async () => {
+    await writeXml(libraryPath, 'items', 'paired.xml', itemXml('Paired Blade', {
+      damage: { smallMin: 5, smallMax: 9, largeMin: 7, largeMax: 11 },
+      pairedDamage: true,
+    }));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({
+      'Paired Blade': { smallMin: 5, smallMax: 9, largeMin: 7, largeMax: 11 },
+    });
+  });
+
+  it('keeps a weapon whose minimum is 0 — a zero is a value, not a missing field', async () => {
+    await writeXml(libraryPath, 'items', 'stick.xml', itemXml('Practice Stick', {
+      damage: { smallMin: 0, smallMax: 3, largeMin: 0, largeMax: 4 },
+    }));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({
+      'Practice Stick': { smallMin: 0, smallMax: 3, largeMin: 0, largeMax: 4 },
+    });
+  });
+
+  it('defaults the optional LargeMin/LargeMax to 0, as Item.xsd does', async () => {
+    await writeXml(libraryPath, 'items', 'oak.xml', itemXml('Oak Stick', {
+      damage: { smallMin: 10, smallMax: 20 },
+    }));
+    const index = await buildIndex(libraryPath);
+    expect(index.itemWeaponDamage).toEqual({
+      'Oak Stick': { smallMin: 10, smallMax: 20, largeMin: 0, largeMax: 0 },
+    });
+  });
+
+  it('skips a <Damage> element missing the required SmallMin/SmallMax', async () => {
+    await writeXml(libraryPath, 'items', 'broken.xml', `<?xml version="1.0" encoding="utf-8"?>
+<Item xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02">
+  <Name>Broken Blade</Name>
+  <Properties><Damage LargeMin="1" LargeMax="2"/></Properties>
+</Item>`);
     const index = await buildIndex(libraryPath);
     expect(index.itemWeaponDamage).toEqual({});
   });
@@ -589,5 +639,153 @@ describe('recursive scanning', () => {
 
     const index = await buildIndex(libraryPath);
     expect(index.itemCategoryDetails[0]?.usedBy).toEqual(['Alpha', 'Bravo']);
+  });
+});
+
+// ── XML entity decoding ─────────────────────────────────────────────────────
+
+describe('entity decoding', () => {
+  it('decodes &amp; in a map name, so a consumer does not escape it twice', async () => {
+    // `world`'s real case: the index held `The Crow &amp; Cask`, the warp picker
+    // wrote it back through an escaper, and the file got `&amp;amp;` — a name
+    // that matches no map, so the warp was dead.
+    await writeXml(libraryPath, 'maps', 'tavern.xml', mapXml('The Crow &amp; Cask', 30909, 20, 20));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.maps).toEqual(['The Crow & Cask']);
+    expect(index.mapDetails[0]?.name).toBe('The Crow & Cask');
+  });
+
+  it('decodes every predefined entity and both numeric forms', async () => {
+    await writeXml(
+      libraryPath,
+      'items',
+      'odd.xml',
+      itemXml('&lt;A&gt; &quot;B&quot; &apos;C&apos; &#38; &#x26; D'),
+    );
+
+    const index = await buildIndex(libraryPath);
+    expect(index.items).toEqual([`<A> "B" 'C' & & D`]);
+  });
+
+  it('decodes one level only, so &amp;lt; stays the text &lt;', async () => {
+    await writeXml(libraryPath, 'npcs', 'odd.xml', npcXml('Amp &amp;lt; Test'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.npcs).toEqual(['Amp &lt; Test']);
+  });
+
+  it('decodes attribute-borne names and cross-reference keys alike', async () => {
+    await writeXml(libraryPath, 'statuses', 'st.xml', statusXml('Hex &amp; Bane'));
+    await writeXml(libraryPath, 'castables', 'c.xml', `<?xml version="1.0" encoding="utf-8"?>
+<Castable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Book="PrimarySpell" Class="Wizard">
+  <Name>Curse &amp; Bless</Name>
+  <Statuses><Add>Hex &amp; Bane</Add></Statuses>
+</Castable>`);
+
+    const index = await buildIndex(libraryPath);
+    expect(index.statuses).toEqual(['Hex & Bane']);
+    expect(index.castables).toEqual(['Curse & Bless']);
+    // The cross-reference key is the decoded name, lowercased — so a consumer
+    // holding a decoded status name finds its casters.
+    expect(index.statusCasters['hex & bane']).toEqual(['Curse & Bless']);
+  });
+
+  it('leaves an entity it does not know exactly as written', async () => {
+    // A custom entity is declared in a DTD the scrape never reads. Guessing at
+    // it would be worse than passing it through.
+    await writeXml(libraryPath, 'npcs', 'n.xml', npcXml('Bob &nbsp; Jones'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.npcs).toEqual(['Bob &nbsp; Jones']);
+  });
+});
+
+// ── Duplicate names ─────────────────────────────────────────────────────────
+
+describe('duplicate names', () => {
+  it('reports two maps claiming one name, with both filenames', async () => {
+    await writeXml(libraryPath, 'maps', 'one.xml', mapXml('Tagor Tavern', 1, 10, 10));
+    await writeXml(libraryPath, 'maps', 'two.xml', mapXml('Tagor Tavern', 2, 20, 20));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapsDuplicateNames).toEqual({ 'tagor tavern': ['one.xml', 'two.xml'] });
+    // The world still opens: the collision is data, not an error.
+    expect(index.maps).toEqual(['Tagor Tavern']);
+    expect(index.mapDetails).toHaveLength(2);
+  });
+
+  it('treats a case difference as a collision, because the server does', async () => {
+    // WorldStateStore.Sanitize lowercases every index key, so these two are one
+    // key on the server and one of the maps is unreachable by name.
+    await writeXml(libraryPath, 'maps', 'upper.xml', mapXml('Tagor Tavern', 1, 10, 10));
+    await writeXml(libraryPath, 'maps', 'lower.xml', mapXml('tagor tavern', 2, 20, 20));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapsDuplicateNames).toEqual({ 'tagor tavern': ['lower.xml', 'upper.xml'] });
+  });
+
+  it('reports nothing when every name is claimed once', async () => {
+    await writeXml(libraryPath, 'maps', 'a.xml', mapXml('Piet', 1, 10, 10));
+    await writeXml(libraryPath, 'maps', 'b.xml', mapXml('Mileth', 2, 20, 20));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapsDuplicateNames).toEqual({});
+  });
+
+  it('does not report an archived copy of a live file', async () => {
+    // `world` keeps archived copies of DarsDarkMagicShop and UndineRestaurant.
+    // The server never loads .ignore/, so these are not collisions — and a
+    // check that reported them on day one would be ignored thereafter.
+    await writeXml(libraryPath, 'maps', 'shop.xml', mapXml("Dar's Dark Magic Shop", 1, 10, 10));
+    await writeArchivedXml(libraryPath, 'maps', 'shop.xml', mapXml("Dar's Dark Magic Shop", 1, 10, 10));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapsDuplicateNames).toEqual({});
+  });
+
+  it('covers types whose name is an attribute, not a <Name> element', async () => {
+    await writeXml(libraryPath, 'statuses', 'a.xml', statusXml('Poisoned'));
+    await writeXml(libraryPath, 'statuses', 'b.xml', statusXml('Poisoned'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.statusesDuplicateNames).toEqual({ poisoned: ['a.xml', 'b.xml'] });
+  });
+
+  it('compares the decoded name, so &amp; and & are one claim', async () => {
+    await writeXml(libraryPath, 'npcs', 'a.xml', npcXml('Crow &amp; Cask Barkeep'));
+    await writeXml(libraryPath, 'npcs', 'b.xml', npcXml('Crow & Cask Barkeep'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.npcsDuplicateNames).toEqual({
+      'crow & cask barkeep': ['a.xml', 'b.xml'],
+    });
+  });
+
+  it('is per type — an item and a map may share a name', async () => {
+    await writeXml(libraryPath, 'maps', 'm.xml', mapXml('Anvil', 1, 10, 10));
+    await writeXml(libraryPath, 'items', 'i.xml', itemXml('Anvil'));
+
+    const index = await buildIndex(libraryPath);
+    expect(index.mapsDuplicateNames).toEqual({});
+    expect(index.itemsDuplicateNames).toEqual({});
+  });
+
+  it('reads through duplicateNamesFor when the type is a variable', async () => {
+    await writeXml(libraryPath, 'npcs', 'a.xml', npcXml('Bob'));
+    await writeXml(libraryPath, 'npcs', 'b.xml', npcXml('Bob'));
+
+    const index = await buildIndex(libraryPath);
+    expect(duplicateNamesFor(index, 'npcs')).toEqual({ bob: ['a.xml', 'b.xml'] });
+    expect(duplicateNamesFor(index, 'items')).toEqual({});
+    expect(duplicateNamesFor(index, 'npcs')[nameCollisionKey('BOB')]).toEqual(['a.xml', 'b.xml']);
+  });
+
+  it('is emitted by buildSection so a single-file save refreshes it', async () => {
+    await writeXml(libraryPath, 'lootsets', 'a.xml', lootSetXml('Common Drops'));
+    await writeXml(libraryPath, 'lootsets', 'b.xml', lootSetXml('Common Drops'));
+
+    const { fields } = await buildSection(libraryPath, 'lootsets');
+    expect(fields.lootsetsDuplicateNames).toEqual({ 'common drops': ['a.xml', 'b.xml'] });
   });
 });
