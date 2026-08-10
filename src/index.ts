@@ -32,12 +32,24 @@ export {
   getIndexStatus,
   ensureCreidhneDir,
   cleanupInWorldIndex,
+  migrateLegacyCacheBase,
   fieldsForType,
 } from './storage.js';
+
+// Name identity. `nameCollisionKey` is the server's own index-key rule, so a
+// consumer probing a collision report normalizes the same way the report was
+// built — do not lowercase by hand at the call site.
+export { duplicateNamesFor, duplicateNamesKey, nameCollisionKey } from './names.js';
+
+// Entity decoding. The scrape applies `xmlText` to everything it captures, so a
+// consumer normally never needs these; they are exported for a consumer that
+// scrapes XML of its own and must agree with the index about what a name is.
+export { decodeXmlEntities, xmlText } from './xmltext.js';
 
 export {
   SCHEMA_VERSION,
   resolveCacheBase,
+  getLegacyCacheBase,
   worldKey,
   getIndexDir,
   getIndexFilePath,
@@ -50,6 +62,7 @@ export {
 export type {
   WorldIndex,
   IndexType,
+  DuplicateNames,
   MapDetail,
   CategoryDetail,
   NpcStringKey,

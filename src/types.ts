@@ -50,6 +50,20 @@ export interface NpcStringKey {
 }
 
 /**
+ * One type's name collisions: collision key → every active, type-relative
+ * filename claiming that name. A name claimed once is absent, so an empty
+ * object means the type is clean.
+ *
+ * The key is `nameCollisionKey(name)` — Unicode-normalized and lowercased,
+ * because that is how the server keys its name indexes. Probe it with the same
+ * function rather than with the raw name.
+ *
+ * Archived (`.ignore/`) files never appear here: the server does not load them,
+ * so an archived copy of a live file is not a collision.
+ */
+export type DuplicateNames = Record<string, string[]>;
+
+/**
  * Full merged world index. On disk this is split into per-type JSON files
  * plus a `_meta.json`; consumers always see the merged shape.
  *
@@ -118,6 +132,27 @@ export interface WorldIndex {
   serverconfigsNamesByFilename: Record<string, string>;
   worldmapsNamesByFilename: Record<string, string>;
 
+  // Name collisions, per type. A name is a server index key, so two active
+  // files claiming one name leaves one of them unreachable by name. Reported as
+  // data, never thrown: a world with a collision must still open. Use
+  // `duplicateNamesFor(index, type)` when the type is a variable.
+  castablesDuplicateNames: DuplicateNames;
+  creaturesDuplicateNames: DuplicateNames;
+  creaturebehaviorsetsDuplicateNames: DuplicateNames;
+  elementtablesDuplicateNames: DuplicateNames;
+  itemsDuplicateNames: DuplicateNames;
+  localizationsDuplicateNames: DuplicateNames;
+  lootsetsDuplicateNames: DuplicateNames;
+  mapsDuplicateNames: DuplicateNames;
+  nationsDuplicateNames: DuplicateNames;
+  npcsDuplicateNames: DuplicateNames;
+  recipesDuplicateNames: DuplicateNames;
+  serverconfigsDuplicateNames: DuplicateNames;
+  spawngroupsDuplicateNames: DuplicateNames;
+  statusesDuplicateNames: DuplicateNames;
+  variantgroupsDuplicateNames: DuplicateNames;
+  worldmapsDuplicateNames: DuplicateNames;
+
   // Castable-specific cross-references
   castableFilenames: Record<string, string>; // display name → filename (active only)
   castableClasses: Record<string, string>; // castable name → space-separated class list
@@ -145,10 +180,14 @@ export interface WorldIndex {
   // Requirements element are absent from the map.
   castableRequiredLevels: Record<string, number>;
 
-  // Per-item weapon damage — present only on items that declare a
-  // <Damage SmallMin/SmallMax/LargeMin/LargeMax/> element under <Properties>.
+  // Per-item weapon damage — present on every item that declares a <Damage>
+  // element under <Properties>, in either the self-closing or the paired form.
   // Used by the damage calculator to auto-populate weapon ranges from a
   // referenced weapon. Items without the element are absent from the map.
+  //
+  // SmallMin/SmallMax are required by the schema; LargeMin/LargeMax are
+  // optional and default to 0, matching `ItemDamage` in Item.xsd. A value of 0
+  // is a value, not a missing field — the weapon is present with a 0 in it.
   itemWeaponDamage: Record<string, {
     smallMin: number;
     smallMax: number;

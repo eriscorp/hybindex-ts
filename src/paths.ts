@@ -8,16 +8,21 @@ import { join, resolve } from 'path';
  * (`…/hybindex/v<SCHEMA_VERSION>/…`) so two app versions on different schemas
  * never read each other's files.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Root of the shared, app-agnostic index cache. The derived index is a
  * rebuildable lookup table, so it lives in per-machine local storage — NOT in
- * the (git-tracked) world folder. Both Creidhne and Taliesin resolve the same
- * base, so one cache serves both.
+ * the (git-tracked) world folder.
  *
  * - Windows:      %LOCALAPPDATA%\Erisco\hybindex
- * - macOS/Linux:  ~/.config/erisco/hybindex
+ * - macOS/Linux:  ~/.config/Erisco/hybindex
+ *
+ * Every consumer resolves the same base. The cache under it is namespaced by
+ * `SCHEMA_VERSION`, so two apps share one cache only while they are on the same
+ * schema — an app a major version behind reads its own `v<n>` directory beside
+ * the current one and rebuilds. The base is shared; the cache is shared only
+ * when the versions agree.
  *
  * `HYBINDEX_CACHE_DIR` overrides the base entirely (used by tests, and
  * available as an escape hatch). Pure `os`/`process.env` — no Electron dep, so
@@ -30,6 +35,24 @@ export function resolveCacheBase(): string {
     const local = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
     return join(local, 'Erisco', 'hybindex');
   }
+  return join(homedir(), '.config', 'Erisco', 'hybindex');
+}
+
+/**
+ * The pre-1.1.0 base on POSIX, which spelled the vendor directory `erisco`.
+ * Every other Erisco app writes `Erisco` on every platform, so this package was
+ * the one exception, and only where it was invisible: NTFS and APFS are
+ * case-insensitive, so `erisco` and `Erisco` are one directory on Windows and
+ * macOS. Linux is case-sensitive, and there a user got two sibling vendor
+ * directories.
+ *
+ * Returns null when there is nothing that could need moving — on Windows, which
+ * never wrote the lowercase form, and under a `HYBINDEX_CACHE_DIR` override,
+ * which replaces the base outright. See `migrateLegacyCacheBase` in storage.ts.
+ */
+export function getLegacyCacheBase(): string | null {
+  if (process.env.HYBINDEX_CACHE_DIR) return null;
+  if (process.platform === 'win32') return null;
   return join(homedir(), '.config', 'erisco', 'hybindex');
 }
 
