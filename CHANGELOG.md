@@ -4,6 +4,17 @@ All notable changes to `@eriscorp/hybindex-ts` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The collision key's docs said every type keys case-insensitively.** Only
+  maps, and the `Name.ToLower()` keys of items, castables and statuses, do.
+  Every other XML type is keyed on its exact `Name`, so for those a case-only
+  collision is one the server does not have, and a reference must match the
+  name's case exactly. `nameCollisionKey` is unchanged: it is the strictest key
+  the server applies, so it still reports every real collision.
+
 ## [1.1.0] - 2026-08-09
 
 ### Fixed

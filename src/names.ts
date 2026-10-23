@@ -11,13 +11,19 @@
 import type { DuplicateNames, IndexType, WorldIndex } from './types.js';
 
 /**
- * Normalize a name the way the server normalizes an index key, so a collision
- * reported here is a collision the server actually has.
+ * The collision key: a name normalized to NFC and lower-cased. It is the
+ * strictest key the server applies to a name, so no collision the server has
+ * goes unreported. It is not the key every type is looked up by:
  *
- * Hybrasyl sanitizes every index key with `key.ToString().Normalize().ToLower()`
- * — `WorldStateStore.Sanitize` for maps, and the identical line in the XML
- * package's `XmlManager` for the rest. So the comparison is Unicode-normalized
- * (NFC) and case-insensitive: `Tagor Tavern` and `tagor tavern` are one key.
+ * - Maps are indexed through `WorldStateStore.Sanitize`,
+ *   `key.ToString().Normalize().ToLower()`, and items, castables and statuses
+ *   also register `Name.ToLower()`. For these `Tagor Tavern` and
+ *   `tagor tavern` are one key.
+ * - Every other type in the XML package (npcs, creatures, lootsets,
+ *   spawngroups and the rest) is keyed on its exact `Name` in `XmlStore`:
+ *   case-sensitive, not normalized. Two names differing only in case are two
+ *   entries there, so this key over-reports for those types, and a reference
+ *   to one must match its case exactly.
  *
  * Whitespace is kept. The docstring beside `Sanitize` claims it removes
  * whitespace — `MiLeTh InN RoOm 1` → `milethinnroom1` — but `Normalize()` is

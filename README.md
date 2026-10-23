@@ -121,7 +121,7 @@ const clash = dupes[nameCollisionKey(candidateName)];
 ```
 
 - **It is data, not an error.** A world with a collision still builds and still opens. Warn in the editor, naming the other file; do not block, because a builder mid-rename passes through a colliding state legitimately and a hard block cannot fix the files that already exist.
-- **The comparison is the server's.** Hybrasyl sanitizes every index key with `key.ToString().Normalize().ToLower()`, so the check is Unicode-normalized and case-insensitive. Probe with `nameCollisionKey` rather than lowercasing by hand. Whitespace is kept — the docstring beside the server's `Sanitize` says it is removed, but the code does not remove it.
+- **The comparison is the strictest of the server's.** Maps, and the `Name.ToLower()` keys of items, castables and statuses, go through `key.ToString().Normalize().ToLower()`, so the check is Unicode-normalized and case-insensitive. Every other XML type is keyed on its exact `Name`, so for those a case-only collision is reported although the server keeps both, and a reference must match the name's case exactly. Probe with `nameCollisionKey` rather than lowercasing by hand. Whitespace is kept — the docstring beside the server's `Sanitize` says it is removed, but the code does not remove it.
 - **Uniqueness is per type.** An item and a map may share a name.
 - **Archived (`.ignore/`) files are never reported.** The server does not load them, so an archived copy of a live file is not a collision.
 
