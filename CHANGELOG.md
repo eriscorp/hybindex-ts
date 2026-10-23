@@ -8,12 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **The collision key's docs said every type keys case-insensitively.** Only
-  maps, and the `Name.ToLower()` keys of items, castables and statuses, do.
-  Every other XML type is keyed on its exact `Name`, so for those a case-only
-  collision is one the server does not have, and a reference must match the
-  name's case exactly. `nameCollisionKey` is unchanged: it is the strictest key
-  the server applies, so it still reports every real collision.
+- **The collision key's docs said it was the server's rule for every type.** It
+  matches the server's rule for maps, short of culture-specific casing. The
+  server keys items and castables by hashed ids and finds them by exact or
+  all-lower-case name, keys statuses and the other loaded types by their exact
+  name (localizations by locale), and does not load recipes. A collision report
+  can therefore name a pair the server keeps apart, and can miss an item pair
+  whose names differ only in non-ASCII letters. A duplicate map name sends warps
+  to the first map silently, rather than failing with an error.
+  `nameCollisionKey` itself is unchanged.
 
 ## [1.1.0] - 2026-08-09
 

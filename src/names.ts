@@ -1,29 +1,24 @@
 /**
- * Name identity, matched to the server's.
+ * Name identity, as far as the server's keys allow.
  *
  * A `<Name>` in world XML is a key, not a label. The server resolves a warp
- * destination out of a name-keyed index (`Warp.cs` → `TryGetValueByIndex`), and
- * a name-keyed index holds one entry per key. Two files claiming one name means
- * one of them is unreachable by name: the warp does nothing and the server logs
- * an error. Nothing in the XML prevents it, so the index reports it.
+ * destination out of a name-keyed index (`Warp.cs` → `TryGetValueByIndex`) that
+ * keeps the first map registered under a name. A second map with that name is
+ * unreachable by name, and a warp meant for it silently lands on the first.
+ * Nothing in the XML prevents it, so the index reports it.
  */
 
 import type { DuplicateNames, IndexType, WorldIndex } from './types.js';
 
 /**
- * The collision key: a name normalized to NFC and lower-cased. It is the
- * strictest key the server applies to a name, so no collision the server has
- * goes unreported. It is not the key every type is looked up by:
+ * The collision key: a name normalized to NFC and lower-cased with the
+ * locale-independent `toLowerCase`. Collision reports are grouped by it.
  *
- * - Maps are indexed through `WorldStateStore.Sanitize`,
- *   `key.ToString().Normalize().ToLower()`, and items, castables and statuses
- *   also register `Name.ToLower()`. For these `Tagor Tavern` and
- *   `tagor tavern` are one key.
- * - Every other type in the XML package (npcs, creatures, lootsets,
- *   spawngroups and the rest) is keyed on its exact `Name` in `XmlStore`:
- *   case-sensitive, not normalized. Two names differing only in case are two
- *   entries there, so this key over-reports for those types, and a reference
- *   to one must match its case exactly.
+ * It matches the server's map key (short of culture-specific casing) and
+ * approximates every other type, so a report is a warning: it can name a pair the server keeps apart,
+ * and rarely miss one the server merges. How the server keys and looks up each
+ * type, and why references are not uniformly case-insensitive, is in the
+ * README under "Duplicate names".
  *
  * Whitespace is kept. The docstring beside `Sanitize` claims it removes
  * whitespace — `MiLeTh InN RoOm 1` → `milethinnroom1` — but `Normalize()` is

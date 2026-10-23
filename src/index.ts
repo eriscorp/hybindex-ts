@@ -36,9 +36,9 @@ export {
   fieldsForType,
 } from './storage.js';
 
-// Name identity. `nameCollisionKey` is the server's own index-key rule, so a
-// consumer probing a collision report normalizes the same way the report was
-// built — do not lowercase by hand at the call site.
+// Name identity. A consumer probing a collision report uses `nameCollisionKey`,
+// so it normalizes the same way the report was built — do not lowercase by hand
+// at the call site.
 export { duplicateNamesFor, duplicateNamesKey, nameCollisionKey } from './names.js';
 
 // Entity decoding. The scrape applies `xmlText` to everything it captures, so a
