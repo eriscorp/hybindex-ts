@@ -54,9 +54,9 @@ export interface NpcStringKey {
  * filename claiming that name. A name claimed once is absent, so an empty
  * object means the type is clean.
  *
- * The key is `nameCollisionKey(name)` — Unicode-normalized and lowercased,
- * because that is how the server keys its name indexes. Probe it with the same
- * function rather than with the raw name.
+ * The key is `nameCollisionKey(name)`, Unicode-normalized and lowercased. It
+ * matches the server's map key and approximates the others (see its docs).
+ * Probe it with the same function rather than with the raw name.
  *
  * Archived (`.ignore/`) files never appear here: the server does not load them,
  * so an archived copy of a live file is not a collision.
@@ -132,9 +132,10 @@ export interface WorldIndex {
   serverconfigsNamesByFilename: Record<string, string>;
   worldmapsNamesByFilename: Record<string, string>;
 
-  // Name collisions, per type. A name is a server index key, so two active
-  // files claiming one name leaves one of them unreachable by name. Reported as
-  // data, never thrown: a world with a collision must still open. Use
+  // Name collisions, per type, grouped by `nameCollisionKey`. A reported pair
+  // may leave one file unreachable by name; see that function for where the
+  // server's keys differ. Reported as data, never thrown: a world
+  // with a collision must still open. Use
   // `duplicateNamesFor(index, type)` when the type is a variable.
   castablesDuplicateNames: DuplicateNames;
   creaturesDuplicateNames: DuplicateNames;

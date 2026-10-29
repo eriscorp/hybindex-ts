@@ -313,8 +313,9 @@ export async function buildSection(
   };
   // Collision key → the active files claiming that name. Recorded BEFORE the
   // dedup guards below, which drop a repeat name silently — the drop is exactly
-  // the condition being reported. Keyed case-insensitively because the server's
-  // name index is; `names` itself stays case-sensitive and unchanged.
+  // the condition being reported. Keyed by `nameCollisionKey`, which matches the
+  // server's map key and approximates its keys for other types (see its docs);
+  // `names` itself stays case-sensitive and unchanged.
   const claimsByName = new Map<string, string[]>();
   const claimName = (name: string, rel: string): void => {
     const key = nameCollisionKey(name);

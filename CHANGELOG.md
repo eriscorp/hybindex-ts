@@ -4,6 +4,20 @@ All notable changes to `@eriscorp/hybindex-ts` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The collision key's docs said it was the server's rule for every type.** It
+  matches the server's rule for maps, short of culture-specific casing. The
+  server keys items and castables by hashed ids and finds them by exact or
+  all-lower-case name, keys statuses and the other loaded types by their exact
+  name (localizations by locale), and does not load recipes. A collision report
+  can therefore name a pair the server keeps apart, and can miss an item pair
+  whose names differ only in non-ASCII letters. A duplicate map name sends warps
+  to the first map silently, rather than failing with an error.
+  `nameCollisionKey` itself is unchanged.
+
 ## [1.1.0] - 2026-08-09
 
 ### Fixed
