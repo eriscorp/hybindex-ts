@@ -4,6 +4,30 @@ All notable changes to `@eriscorp/hybindex-ts` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-29
+
+### Added
+
+- **Element tables (HTOO-582, HXML-24).** `elementTables` maps each element table name to its element keys, its groups and its default element. `serverconfigElementTables` maps each server config to its `ElementTable` attribute, or to null when the attribute is not set.
+  - `resolveElementTable(index, serverConfigName?)` returns the table that the server uses: the table that the server config selects, when it exists, and otherwise the only table. A server config without the attribute selects `default`. `DEFAULT_ELEMENT_TABLE` is exported.
+  - A table without an `<Elements>` block is in the old format. Its elements are its `<Source>` rows, it has no groups, and its default is null. `world` and `ceridwen` keep this format until the HS-1239 content migration.
+- **Traits (HTOO-616, HXML-28).** `traits`, `archivedTraits`, `traitsNamesByFilename` and `traitsDuplicateNames`, keyed by the `Name` attribute. `traitCategories` lists each `Category`. `traitExclusiveGroups` maps each `ExclusiveGroup` to its traits.
+- **Species (HTOO-616, HXML-37).** `species`, `archivedSpecies`, `speciesNamesByFilename` and `speciesDuplicateNames`, keyed by the `Key` attribute. `speciesDetails` holds the `Id`, `BranchOf`, `PlayerOption` and bodies of each species. `speciesBodyIds` maps each body `Id` to every body that claims it, with the file, because a body `Id` must be unique across all species.
+- **`listIndexCaches` and `pruneIndexCaches` (HTOO-583).** They find and remove cache directories of an old schema version, and cache directories whose world no longer exists. `dryRun` returns the list and removes nothing. A version higher than `SCHEMA_VERSION` is never touched. Nothing calls them automatically.
+
+### Changed
+
+- **The macOS cache base is `~/Library/Application Support/Erisco/hybindex` (HTOO-586).** It was `~/.config/Erisco/hybindex`, the Linux base. Every other Erisco tool on a Mac uses `Application Support`. `migrateLegacyCacheBase` moves the old base on the first save. Windows and Linux do not change.
+- **`SCHEMA_VERSION` is now `5`.** The first build after this release rebuilds from source into `v5/`. `pruneIndexCaches` removes the old `v4/`.
+- **`elementnames` is deprecated.** It is the union of all tables. In a table with an `<Elements>` block it now comes from the `<Element Key>` values, not from the `<Source>` rows. A later major version removes it, after Creidhne uses `elementTables`.
+
+### Fixed
+
+- **An attribute-keyed file is named by its root element only.** The scrape took the first `Name="…"` anywhere in the file. A file without a root `Name` took the name of a child element.
+  - `world`'s `serverconfigs/config.xml` was indexed as `Danaan`, the name of one of its `<Age>` elements, and `ceridwen`'s as `discuss`, the name of a `<Board>`. The server names both `default`, and so does the index now. An element table without a root `Name` is also `default`.
+  - The new element format gives each `<Element>` a `Name` attribute, so without this fix an element table without a root `Name` took the name of its first element.
+  - `world` has 582 archived spawn groups in an old format with no root `Name`. Each was listed under the name of its first `<Map>`. They now have no name, and `archivedSpawngroups` drops from 574 names to 1.
+
 ## [1.1.0] - 2026-08-09
 
 ### Fixed

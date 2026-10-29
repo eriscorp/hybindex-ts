@@ -3,9 +3,13 @@ import type {
   BuildOptions,
   CategoryDetail,
   DuplicateNames,
+  ElementTableIndex,
   IndexType,
   MapDetail,
   NpcStringKey,
+  SpeciesBodyClaim,
+  SpeciesBodyDetail,
+  SpeciesDetail,
   WorldIndex,
 } from './types.js';
 import { INDEX_TYPES } from './types.js';
@@ -92,26 +96,153 @@ const ATTR_NAME_MAP: Partial<Record<IndexType, string>> = {
   lootsets: 'Name',
   serverconfigs: 'Name',
   spawngroups: 'Name',
+  traits: 'Name',
+  species: 'Key',
   localizations: 'Locale',
 };
 
-/** Regex used to extract identifier from archived (.ignore) files per type. */
+/**
+ * The identifier of a file whose root element has no identifier attribute.
+ * These are the schema defaults: the generated xml classes start `Name` at
+ * `"default"`, so the server names such a file `default`.
+ */
+const ATTR_NAME_DEFAULT: Partial<Record<IndexType, string>> = {
+  elementtables: 'default',
+  serverconfigs: 'default',
+};
+
+/** Regex used to extract the `<Name>` element from archived (.ignore) files per type. */
 const ARCHIVED_NAME_REGEX: Partial<Record<IndexType, RegExp>> = {
   castables: /<Name>([^<]+)<\/Name>/,
-  creatures: /\bName="([^"]+)"/,
-  creaturebehaviorsets: /\bName="([^"]+)"/,
-  elementtables: /\bName="([^"]+)"/,
   items: /<Name>([^<]+)<\/Name>/,
-  localizations: /\bLocale="([^"]+)"/,
-  lootsets: /\bName="([^"]+)"/,
   nations: /<Name>([^<]+)<\/Name>/,
   npcs: /<Name>([^<]+)<\/Name>/,
   recipes: /<Name>([^<]+)<\/Name>/,
-  serverconfigs: /\bName="([^"]+)"/,
-  spawngroups: /\bName="([^"]+)"/,
-  statuses: /\bName="([^"]+)"/,
   variantgroups: /<Name>([^<]+)<\/Name>/,
 };
+
+/**
+ * The attributes of the root element's start tag. The match skips a byte order
+ * mark, the XML declaration, comments and a DOCTYPE, so a tag in a comment is
+ * never the root.
+ */
+const ROOT_TAG = /^(?:﻿|\s|<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)*<[A-Za-z_][^\s/>]*([^>]*)>/;
+
+/** The raw value of the attribute `name` in `attrs`, or null when it is absent. */
+function attrValue(attrs: string, name: string): string | null {
+  const m = new RegExp(`\\b${name}="([^"]*)"`).exec(attrs);
+  return m ? (m[1] ?? '') : null;
+}
+
+/** The raw value of an attribute on the root element, or null when it is absent. */
+function rootAttr(content: string, name: string): string | null {
+  const attrs = ROOT_TAG.exec(content)?.[1];
+  return attrs == null ? null : attrValue(attrs, name);
+}
+
+/**
+ * The identifier of a file of an attribute-keyed type. It is read from the
+ * root element only. A search of the whole file finds the first `Name=` at any
+ * depth: a server config without a root `Name` was indexed by the name of one
+ * of its `<Age>` children.
+ */
+function rootName(type: IndexType, content: string): string {
+  const attr = ATTR_NAME_MAP[type];
+  if (!attr) return '';
+  return xmlText(rootAttr(content, attr) ?? ATTR_NAME_DEFAULT[type]);
+}
+
+/** The identifier reader for a type's archived files, or null when the type has no archive scan. */
+function archivedNameReader(type: IndexType): ((content: string) => string) | null {
+  if (ATTR_NAME_MAP[type]) return (content) => rootName(type, content);
+  const regex = ARCHIVED_NAME_REGEX[type];
+  return regex ? (content) => xmlText(regex.exec(content)?.[1]) : null;
+}
+
+/** An `xs:boolean` attribute value. */
+const isTrue = (value: string | null): boolean => value === 'true' || value === '1';
+
+/** An unsigned integer attribute value, or null when it is missing or is not a number. */
+function uintAttr(attrs: string, name: string): number | null {
+  const value = attrValue(attrs, name)?.trim();
+  return value && /^\d+$/.test(value) ? parseInt(value, 10) : null;
+}
+
+/**
+ * Read the element structure of one element table. A table without an
+ * `<Elements>` block is in the old format: its `<Source>` rows give the
+ * elements. `world` and `ceridwen` keep the old format until the HS-1239
+ * content migration.
+ */
+function parseElementTable(content: string): ElementTableIndex {
+  const elements: string[] = [];
+  const addElement = (key: string): void => {
+    if (key && !elements.includes(key)) elements.push(key);
+  };
+  const elementsBlock = /<Elements\b[^>]*>([\s\S]*?)<\/Elements>/.exec(content);
+  if (!elementsBlock) {
+    const sourceRegex = /<Source\b([^>]*)>/g;
+    let sm;
+    while ((sm = sourceRegex.exec(content)) !== null) {
+      addElement(xmlText(attrValue(sm[1] ?? '', 'Element')));
+    }
+    return { elements, groups: {}, defaultElement: null };
+  }
+
+  let defaultElement: string | null = null;
+  const elementRegex = /<Element\b([^>]*)>/g;
+  let em;
+  while ((em = elementRegex.exec(elementsBlock[1] ?? '')) !== null) {
+    const attrs = em[1] ?? '';
+    const key = xmlText(attrValue(attrs, 'Key'));
+    addElement(key);
+    if (key && defaultElement === null && isTrue(attrValue(attrs, 'Default'))) defaultElement = key;
+  }
+
+  const groups = new Map<string, string[]>();
+  const groupsBlock = /<Groups\b[^>]*>([\s\S]*?)<\/Groups>/.exec(content);
+  if (groupsBlock) {
+    const groupRegex = /<Group\b([^>]*)>/g;
+    let gm;
+    while ((gm = groupRegex.exec(groupsBlock[1] ?? '')) !== null) {
+      const attrs = gm[1] ?? '';
+      const key = xmlText(attrValue(attrs, 'Key'));
+      if (!key || groups.has(key)) continue;
+      // `Members` is an xs:list: whitespace separates the keys.
+      groups.set(key, xmlText(attrValue(attrs, 'Members')).split(/\s+/).filter(Boolean));
+    }
+  }
+  return { elements, groups: Object.fromEntries(groups), defaultElement };
+}
+
+/** Read the root attributes and the bodies of one species file. */
+function parseSpecies(content: string): SpeciesDetail {
+  const attrs = ROOT_TAG.exec(content)?.[1] ?? '';
+  const branchOf = attrValue(attrs, 'BranchOf');
+  const playerOption = attrValue(attrs, 'PlayerOption');
+  const bodies: SpeciesBodyDetail[] = [];
+  const bodiesBlock = /<Bodies\b[^>]*>([\s\S]*?)<\/Bodies>/.exec(content);
+  if (bodiesBlock) {
+    const bodyRegex = /<Body\b([^>]*)>/g;
+    let bm;
+    while ((bm = bodyRegex.exec(bodiesBlock[1] ?? '')) !== null) {
+      const bodyAttrs = bm[1] ?? '';
+      const key = xmlText(attrValue(bodyAttrs, 'Key'));
+      if (!key) continue;
+      bodies.push({
+        key,
+        id: uintAttr(bodyAttrs, 'Id'),
+        default: isTrue(attrValue(bodyAttrs, 'Default')),
+      });
+    }
+  }
+  return {
+    id: uintAttr(attrs, 'Id'),
+    branchOf: branchOf == null ? null : xmlText(branchOf) || null,
+    playerOption: playerOption == null ? null : xmlText(playerOption) || null,
+    bodies,
+  };
+}
 
 const archivedKey = (type: IndexType): string =>
   `archived${type.charAt(0).toUpperCase()}${type.slice(1)}`;
@@ -157,7 +288,7 @@ function addReverseRef(
 async function readArchived(
   dir: string,
   rels: string[],
-  nameRegex: RegExp,
+  readName: (content: string) => string,
 ): Promise<{ names: string[]; namesByFilename: Record<string, string> }> {
   const names: string[] = [];
   const nameSet = new Set<string>();
@@ -166,7 +297,7 @@ async function readArchived(
   for (let i = 0; i < rels.length; i++) {
     const content = contents[i];
     if (content == null) continue;
-    const n = xmlText(nameRegex.exec(content)?.[1]);
+    const n = readName(content);
     if (!n) continue;
     if (!nameSet.has(n)) {
       nameSet.add(n);
@@ -271,16 +402,13 @@ export async function buildSection(
   const names: string[] = [];
   const nameSet = new Set<string>();
   const namesByFilename: Record<string, string> = {};
-  const attrName = ATTR_NAME_MAP[type];
-  // Hoisted out of the per-file loop (was rebuilt per file before).
-  const attrNameRegex = attrName ? new RegExp(`\\b${attrName}="([^"]+)"`) : null;
+  const isAttrNamed = ATTR_NAME_MAP[type] != null;
   const localizationSections: [string, RegExp][] = [
     ['Common', /<Common>[\s\S]*?<\/Common>/],
     ['Merchant', /<Merchant>[\s\S]*?<\/Merchant>/],
     ['Monster', /<MonsterSpeak>[\s\S]*?<\/MonsterSpeak>/],
   ];
   const shopTabRegex = /\bShopTab="([^"]+)"/g;
-  const elementRegex = /<Source[^>]+Element="([^"]+)"/g;
 
   // Cross-refs + aggregates this scan may populate
   const castableClasses: Record<string, string> = {};
@@ -300,6 +428,14 @@ export async function buildSection(
   const formulaUsedByStatuses: Record<string, string[]> = {};
   const castableRequiredLevels: Record<string, number> = {};
   const itemWeaponDamage: Record<string, { smallMin: number; smallMax: number; largeMin: number; largeMax: number }> = {};
+  // Maps, not object literals: a key such as `constructor` must not find an
+  // inherited property. Each one becomes a plain object when it is emitted.
+  const elementTables = new Map<string, ElementTableIndex>();
+  const serverconfigElementTables = new Map<string, string | null>();
+  const traitCategorySet = new Set<string>();
+  const traitExclusiveGroups = new Map<string, string[]>();
+  const speciesDetails = new Map<string, SpeciesDetail>();
+  const speciesBodyIds = new Map<string, SpeciesBodyClaim[]>();
   // Aggregates folded into this single read pass (formerly separate re-reads of
   // every file): category usage, vendor tabs, element names.
   const catMap: Record<string, { count: number; usedBy: string[]; members: string[] }> = {};
@@ -359,15 +495,6 @@ export async function buildSection(
         if (v) vendorTabSet.add(v);
       }
     }
-    if (type === 'elementtables') {
-      elementRegex.lastIndex = 0;
-      let em;
-      while ((em = elementRegex.exec(content)) !== null) {
-        const v = xmlText(em[1]);
-        if (v) elementNameSet.add(v);
-      }
-    }
-
     if (type === 'castables') {
       const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
       if (nameMatch && nameMatch[1]) {
@@ -448,11 +575,10 @@ export async function buildSection(
         }
       }
     } else if (type === 'creatures') {
-      const nameMatch = /\bName="([^"]+)"/.exec(content);
-      if (nameMatch && nameMatch[1]) {
-        const name = xmlText(nameMatch[1]);
-        if (name) claimName(name, rel);
-        if (name && !nameSet.has(name)) recordName(name);
+      const name = rootName(type, content);
+      if (name) {
+        claimName(name, rel);
+        if (!nameSet.has(name)) recordName(name);
       }
       const typeRegex = /<Type[^>]+Name="([^"]+)"/g;
       let tm;
@@ -476,15 +602,48 @@ export async function buildSection(
           if (detail) mapDetails.push(detail);
         }
       }
-    } else if (attrNameRegex) {
-      const match = attrNameRegex.exec(content);
-      if (match && match[1]) {
-        const name = xmlText(match[1]);
-        if (name) claimName(name, rel);
-        if (name && !nameSet.has(name)) recordName(name);
+    } else if (isAttrNamed) {
+      const name = rootName(type, content);
+      // Element names come from every table file, as before. `elementnames` is
+      // the union, so a table whose name is claimed twice still adds to it.
+      if (type === 'elementtables') {
+        const table = parseElementTable(content);
+        for (const key of table.elements) elementNameSet.add(key);
+        if (name && !elementTables.has(name)) elementTables.set(name, table);
+      }
+      if (name) {
+        claimName(name, rel);
+        if (!nameSet.has(name)) recordName(name);
+        if (type === 'serverconfigs' && !serverconfigElementTables.has(name)) {
+          const selected = rootAttr(content, 'ElementTable');
+          serverconfigElementTables.set(name, selected == null ? null : xmlText(selected));
+        }
+        if (type === 'traits') {
+          const category = xmlText(rootAttr(content, 'Category'));
+          if (category) traitCategorySet.add(category);
+          const group = xmlText(/<ExclusiveGroup\b[^>]*>([^<]*)<\/ExclusiveGroup>/.exec(content)?.[1]);
+          if (group) {
+            const members = traitExclusiveGroups.get(group) ?? [];
+            if (!members.includes(name)) members.push(name);
+            traitExclusiveGroups.set(group, members);
+          }
+        }
+        // Every file's bodies are claims, so a body Id in a duplicate species
+        // file is reported too. The detail map keeps the first file only.
+        if (type === 'species') {
+          const detail = parseSpecies(content);
+          if (!speciesDetails.has(name)) speciesDetails.set(name, detail);
+          for (const body of detail.bodies) {
+            if (body.id == null) continue;
+            const id = String(body.id);
+            const claims = speciesBodyIds.get(id) ?? [];
+            claims.push({ species: name, body: body.key, filename: rel });
+            speciesBodyIds.set(id, claims);
+          }
+        }
         // Statuses encode formula references under meta.formulaNames per block
         // (onApply/onTick/onRemove × heal/damage). Extract and reverse-index.
-        if (type === 'statuses' && name) {
+        if (type === 'statuses') {
           const meta = readCreidhneMeta(content);
           const fnByBlock = meta && typeof meta.formulaNames === 'object' ? meta.formulaNames as Record<string, unknown> : null;
           if (fnByBlock) {
@@ -500,7 +659,7 @@ export async function buildSection(
         }
         // Lootsets: every <Item> inside an <Items> block is reverse-indexed
         // so the items editor can show "appears in loot set X".
-        if (type === 'lootsets' && name) {
+        if (type === 'lootsets') {
           const itemsBlockRegex = /<Items[^>]*>([\s\S]*?)<\/Items>/g;
           let ib;
           while ((ib = itemsBlockRegex.exec(content)) !== null) {
@@ -591,10 +750,10 @@ export async function buildSection(
 
   // Archived scan. Keys are `.ignore/`-prefixed, so this cannot overwrite an
   // active entry that happens to share a basename.
-  const archRegex = ARCHIVED_NAME_REGEX[type];
+  const readArchivedName = archivedNameReader(type);
   let archivedNames: string[] = [];
-  if (archRegex) {
-    const result = await readArchived(dirPath, archived, archRegex);
+  if (readArchivedName) {
+    const result = await readArchived(dirPath, archived, readArchivedName);
     archivedNames = result.names;
     Object.assign(namesByFilename, result.namesByFilename);
   }
@@ -604,7 +763,7 @@ export async function buildSection(
   // FIELD_TO_FILE) — emitting an empty one would desync from the reuse path.
   const fields: Record<string, unknown> = { [type]: names };
   if (type !== 'maps') fields[namesByFilenameKey(type)] = namesByFilename;
-  if (archRegex) fields[archivedKey(type)] = archivedNames;
+  if (readArchivedName) fields[archivedKey(type)] = archivedNames;
 
   // Collision report. A grouping over names already in memory, so it costs
   // nothing beyond the map itself, and it is emitted for every type — including
@@ -662,6 +821,15 @@ export async function buildSection(
     fields.npcStringKeys = npcStringKeys;
   } else if (type === 'elementtables') {
     fields.elementnames = [...elementNameSet].sort();
+    fields.elementTables = Object.fromEntries(elementTables);
+  } else if (type === 'serverconfigs') {
+    fields.serverconfigElementTables = Object.fromEntries(serverconfigElementTables);
+  } else if (type === 'traits') {
+    fields.traitCategories = [...traitCategorySet].sort();
+    fields.traitExclusiveGroups = Object.fromEntries(traitExclusiveGroups);
+  } else if (type === 'species') {
+    fields.speciesDetails = Object.fromEntries(speciesDetails);
+    fields.speciesBodyIds = Object.fromEntries(speciesBodyIds);
   } else if (type === 'maps') {
     mapDetails.sort((a, b) => a.id - b.id);
     fields.mapDetails = mapDetails;
@@ -742,29 +910,34 @@ function emptyWorldIndex(libraryPath: string): WorldIndex {
     builtAt: new Date().toISOString(),
     castables: [], creatures: [], creaturebehaviorsets: [], elementtables: [], items: [],
     localizations: [], lootsets: [], maps: [], nations: [], npcs: [], recipes: [],
-    serverconfigs: [], spawngroups: [], statuses: [], variantgroups: [], worldmaps: [],
+    serverconfigs: [], spawngroups: [], species: [], statuses: [], traits: [],
+    variantgroups: [], worldmaps: [],
     archivedCastables: [], archivedCreatures: [], archivedCreaturebehaviorsets: [],
     archivedElementtables: [], archivedItems: [], archivedLocalizations: [],
     archivedLootsets: [], archivedNations: [], archivedNpcs: [], archivedRecipes: [],
-    archivedServerconfigs: [], archivedSpawngroups: [], archivedStatuses: [],
-    archivedVariantgroups: [],
+    archivedServerconfigs: [], archivedSpawngroups: [], archivedSpecies: [],
+    archivedStatuses: [], archivedTraits: [], archivedVariantgroups: [],
     castablesNamesByFilename: {}, statusesNamesByFilename: {}, itemsNamesByFilename: {},
     creaturesNamesByFilename: {}, npcsNamesByFilename: {}, nationsNamesByFilename: {},
     lootsetsNamesByFilename: {}, recipesNamesByFilename: {}, variantgroupsNamesByFilename: {},
     localizationsNamesByFilename: {}, elementtablesNamesByFilename: {},
     creaturebehaviorsetsNamesByFilename: {}, spawngroupsNamesByFilename: {},
     serverconfigsNamesByFilename: {}, worldmapsNamesByFilename: {},
+    traitsNamesByFilename: {}, speciesNamesByFilename: {},
     castablesDuplicateNames: {}, creaturesDuplicateNames: {},
     creaturebehaviorsetsDuplicateNames: {}, elementtablesDuplicateNames: {},
     itemsDuplicateNames: {}, localizationsDuplicateNames: {},
     lootsetsDuplicateNames: {}, mapsDuplicateNames: {}, nationsDuplicateNames: {},
     npcsDuplicateNames: {}, recipesDuplicateNames: {}, serverconfigsDuplicateNames: {},
-    spawngroupsDuplicateNames: {}, statusesDuplicateNames: {},
-    variantgroupsDuplicateNames: {}, worldmapsDuplicateNames: {},
+    spawngroupsDuplicateNames: {}, speciesDuplicateNames: {}, statusesDuplicateNames: {},
+    traitsDuplicateNames: {}, variantgroupsDuplicateNames: {}, worldmapsDuplicateNames: {},
     castableFilenames: {}, castableClasses: {}, castableIcons: {}, castableBooks: {}, statusCasters: {},
     castableTrainers: {}, itemVendors: {}, itemLootSets: {},
     formulaUsedByCastables: {}, formulaUsedByStatuses: {},
     castableRequiredLevels: {}, itemWeaponDamage: {},
+    elementTables: {}, serverconfigElementTables: {},
+    traitCategories: [], traitExclusiveGroups: {},
+    speciesDetails: {}, speciesBodyIds: {},
     npcResponseCalls: {}, npcStringKeys: [],
     creatureTypes: [], elementnames: [], scripts: [], cookieNames: [],
     vendorTabs: [], npcJobs: [], creatureFamilies: [],

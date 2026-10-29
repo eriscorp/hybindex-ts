@@ -8,15 +8,19 @@ import { join, resolve } from 'path';
  * (`…/hybindex/v<SCHEMA_VERSION>/…`) so two app versions on different schemas
  * never read each other's files.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Root of the shared, app-agnostic index cache. The derived index is a
  * rebuildable lookup table, so it lives in per-machine local storage — NOT in
  * the (git-tracked) world folder.
  *
- * - Windows:      %LOCALAPPDATA%\Erisco\hybindex
- * - macOS/Linux:  ~/.config/Erisco/hybindex
+ * - Windows:  %LOCALAPPDATA%\Erisco\hybindex
+ * - macOS:    ~/Library/Application Support/Erisco/hybindex
+ * - Linux:    ~/.config/Erisco/hybindex
+ *
+ * The macOS and Linux bases are the ones that the other Erisco tools use.
+ * Before 1.2.0, macOS used `~/.config/Erisco/hybindex` (HTOO-586).
  *
  * Every consumer resolves the same base. The cache under it is namespaced by
  * `SCHEMA_VERSION`, so two apps share one cache only while they are on the same
@@ -28,31 +32,38 @@ export const SCHEMA_VERSION = 4;
  * available as an escape hatch). Pure `os`/`process.env` — no Electron dep, so
  * the package stays usable from any Node context.
  */
-export function resolveCacheBase(): string {
+export function resolveCacheBase(platform: NodeJS.Platform = process.platform): string {
   const override = process.env.HYBINDEX_CACHE_DIR;
   if (override) return override;
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     const local = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
     return join(local, 'Erisco', 'hybindex');
+  }
+  if (platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'Erisco', 'hybindex');
   }
   return join(homedir(), '.config', 'Erisco', 'hybindex');
 }
 
 /**
- * The pre-1.1.0 base on POSIX, which spelled the vendor directory `erisco`.
- * Every other Erisco app writes `Erisco` on every platform, so this package was
- * the one exception, and only where it was invisible: NTFS and APFS are
- * case-insensitive, so `erisco` and `Erisco` are one directory on Windows and
- * macOS. Linux is case-sensitive, and there a user got two sibling vendor
- * directories.
+ * The previous base on POSIX, which `migrateLegacyCacheBase` in storage.ts
+ * moves to the current base.
+ *
+ * - Linux: `~/.config/erisco/hybindex`. Before 1.1.0 the vendor directory was
+ *   `erisco`. Every other Erisco app writes `Erisco`. Linux is case-sensitive,
+ *   so a user got two sibling vendor directories.
+ * - macOS: `~/.config/Erisco/hybindex`. Before 1.2.0 macOS used the Linux base.
+ *   APFS is case-insensitive, so this one directory is also the pre-1.1.0
+ *   `erisco` spelling.
  *
  * Returns null when there is nothing that could need moving — on Windows, which
- * never wrote the lowercase form, and under a `HYBINDEX_CACHE_DIR` override,
- * which replaces the base outright. See `migrateLegacyCacheBase` in storage.ts.
+ * never used another base, and under a `HYBINDEX_CACHE_DIR` override, which
+ * replaces the base outright.
  */
-export function getLegacyCacheBase(): string | null {
+export function getLegacyCacheBase(platform: NodeJS.Platform = process.platform): string | null {
   if (process.env.HYBINDEX_CACHE_DIR) return null;
-  if (process.platform === 'win32') return null;
+  if (platform === 'win32') return null;
+  if (platform === 'darwin') return join(homedir(), '.config', 'Erisco', 'hybindex');
   return join(homedir(), '.config', 'erisco', 'hybindex');
 }
 

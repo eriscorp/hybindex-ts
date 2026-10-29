@@ -177,6 +177,84 @@ export const spawnGroupXml = (name: string): string =>
   `<?xml version="1.0" encoding="utf-8"?>
 <SpawnGroup xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}"/>`;
 
-export const serverConfigXml = (name: string): string =>
+/** `name: null` writes no root `Name`, as `world`'s `config.xml` does. */
+export const serverConfigXml = (
+  name: string | null,
+  opts: { elementTable?: string; body?: string } = {},
+): string => {
+  const attrs = [
+    ...(name != null ? [`Name="${name}"`] : []),
+    ...(opts.elementTable != null ? [`ElementTable="${opts.elementTable}"`] : []),
+  ].join(' ');
+  const open = `<ServerConfig xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" ${attrs}`;
+  return `<?xml version="1.0" encoding="utf-8"?>
+${opts.body ? `${open}>\n${opts.body}\n</ServerConfig>` : `${open}/>`}`;
+};
+
+/** An element table in the old format: `<Source>` rows only. */
+export const oldElementTableXml = (name: string | null, sources: string[]): string =>
   `<?xml version="1.0" encoding="utf-8"?>
-<ServerConfig xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}"/>`;
+<ElementTable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02"${name != null ? ` Name="${name}"` : ''}>
+${sources.map((s) => `  <Source Element="${s}"><Target Element="${s}" Multiplier="1"/></Source>`).join('\n')}
+</ElementTable>`;
+
+/** An element table in the HXML-24 format, with `<Elements>` and optional `<Groups>`. */
+export const elementTableXml = (
+  name: string,
+  elements: { key: string; id: number; default?: boolean; name?: string }[],
+  groups: Record<string, string> = {},
+): string => {
+  const elementTags = elements
+    .map((e) =>
+      `    <Element Key="${e.key}" Id="${e.id}"${e.name ? ` Name="${e.name}"` : ''}${e.default ? ' Default="true"' : ''}/>`,
+    )
+    .join('\n');
+  const groupEntries = Object.entries(groups);
+  const groupBlock = groupEntries.length
+    ? `\n  <Groups>\n${groupEntries.map(([k, m]) => `    <Group Key="${k}" Members="${m}"/>`).join('\n')}\n  </Groups>`
+    : '';
+  const first = elements[0]?.key ?? 'None';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<ElementTable xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}">
+  <Elements>
+${elementTags}
+  </Elements>${groupBlock}
+  <Source Element="${first}" DefaultMultiplier="1"/>
+</ElementTable>`;
+};
+
+export const traitXml = (
+  name: string,
+  opts: { category?: string; exclusiveGroup?: string; policy?: string; conflicts?: string[] } = {},
+): string => {
+  const group = opts.exclusiveGroup
+    ? `\n  <ExclusiveGroup${opts.policy ? ` Policy="${opts.policy}"` : ''}>${opts.exclusiveGroup}</ExclusiveGroup>`
+    : '';
+  const conflicts = opts.conflicts?.length
+    ? `\n  <ConflictsWith>${opts.conflicts.map((c) => `<Trait>${c}</Trait>`).join('')}</ConflictsWith>`
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<Trait xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Name="${name}" Icon="1" IconSet="Skill"${opts.category ? ` Category="${opts.category}"` : ''}>
+  <Description>A trait.</Description>${group}${conflicts}
+</Trait>`;
+};
+
+export const speciesXml = (
+  key: string,
+  opts: {
+    id?: number;
+    playerOption?: string;
+    branchOf?: string;
+    bodies?: { key: string; id: number; default?: boolean }[];
+  } = {},
+): string => {
+  const bodies = opts.bodies?.length
+    ? `\n  <Bodies>\n${opts.bodies
+        .map((b) => `    <Body Key="${b.key}" Id="${b.id}"${b.default ? ' Default="true"' : ''}/>`)
+        .join('\n')}\n  </Bodies>`
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<Species xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Key="${key}" Id="${opts.id ?? 1}" Origin="Aosda" PlayerOption="${opts.playerOption ?? 'Starter'}"${opts.branchOf ? ` BranchOf="${opts.branchOf}"` : ''}>
+  <Names Singular="${key}" Plural="${key}s" Adjective="${key}ish"/>${bodies}
+</Species>`;
+};

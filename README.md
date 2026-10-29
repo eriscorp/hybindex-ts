@@ -52,16 +52,34 @@ The index is a **rebuildable, per-machine cache** — derived data, not source �
 ├── _filecache.json         # per-section build signature (incremental rebuilds)
 ```
 
-- `cacheBase` is `%LOCALAPPDATA%\Erisco\hybindex` on Windows and `~/.config/Erisco/hybindex` elsewhere. Set `HYBINDEX_CACHE_DIR` to override it (used by tests).
+- `cacheBase` is `%LOCALAPPDATA%\Erisco\hybindex` on Windows, `~/Library/Application Support/Erisco/hybindex` on macOS and `~/.config/Erisco/hybindex` on Linux. These are the bases of the other Erisco tools. Set `HYBINDEX_CACHE_DIR` to override it (used by tests).
 - `<worldKey>` is `<worldName>-<sha1(absolutePath)>`, so two libraries that share a folder name never collide.
 - Every consumer resolves the same base, but the cache under it is namespaced by `SCHEMA_VERSION` — so two apps share one cache only while they are on the same schema. An app a major version behind reads its own `v<n>` directory beside the current one and rebuilds.
 - Builds are **incremental**: `_filecache.json` records a cheap stat-only signature per section, so a no-change rebuild is `O(stat)` and editing one type rescans only that type.
 
 Pre-0.3.0 the index lived in-world under `world/.creidhne/`. There is no migration of that derived data — it is simply cleaned up (`cleanupInWorldIndex`) the next time the index is saved.
 
-Before 1.1.0 the base off Windows was `~/.config/erisco/hybindex`, lowercased. Every other Erisco app writes `Erisco` on every platform, so this was the one exception — and only where it was invisible, since NTFS and APFS are case-insensitive and only Linux ever showed two vendor directories. `migrateLegacyCacheBase` renames the old one into place once; it runs automatically wherever this package creates its cache directory, and is exported so an app can also call it at startup.
+Before 1.1.0 the base off Windows was `~/.config/erisco/hybindex`, lowercased. Every other Erisco app writes `Erisco` on every platform, so this was the one exception — and only where it was invisible, since NTFS and APFS are case-insensitive and only Linux ever showed two vendor directories. Before 1.2.0 the base on macOS was `~/.config/Erisco/hybindex`, the Linux base. `migrateLegacyCacheBase` renames the old base into place once; it runs automatically wherever this package creates its cache directory, and is exported so an app can also call it at startup.
 
-`SCHEMA_VERSION` namespaces the cache directory, so a schema bump rebuilds from scratch on next run rather than migrating. It is now `v4`. Any older `v<n>/` directory left behind is inert and can be deleted by hand.
+`SCHEMA_VERSION` namespaces the cache directory, so a schema bump rebuilds from scratch on next run rather than migrating. It is now `v5`.
+
+### Old caches
+
+Nothing removes a cache directory automatically. Each schema bump leaves the old `v<n>/` tree, and a world that moves or is deleted leaves its `<worldKey>/` directory. An app removes them from a user action, for example "Clear old indexes":
+
+```ts
+import { pruneIndexCaches } from '@eriscorp/hybindex-ts';
+
+const planned = await pruneIndexCaches({ dryRun: true }); // show these, with sizeBytes
+const removed = await pruneIndexCaches();
+```
+
+- `oldSchema`: the version is lower than `SCHEMA_VERSION`.
+- `missingWorld`: the `libraryPath` in `_meta.json` does not exist, or the directory has no readable `_meta.json`.
+- A version higher than `SCHEMA_VERSION` is never touched. A newer app owns it.
+- The previous base (`getLegacyCacheBase`) is scanned too, so an old cache that an older app wrote there after the move is also removed.
+
+An app on an older version of this package rebuilds its index on the next load if its `v<n>` is removed. No data is lost.
 
 ## Install
 
@@ -125,6 +143,30 @@ const clash = dupes[nameCollisionKey(candidateName)];
 - **Uniqueness is per type.** An item and a map may share a name.
 - **Archived (`.ignore/`) files are never reported.** The server does not load them, so an archived copy of a live file is not a collision.
 
+### Element tables
+
+`elementTables` holds the element keys, the groups and the default element of each element table (HXML-24). A world can have more than one table, and each server config selects one with its `ElementTable` attribute. `resolveElementTable` applies the server's rule:
+
+```ts
+import { resolveElementTable } from '@eriscorp/hybindex-ts';
+
+const tableName = resolveElementTable(index, 'qa'); // null when the index cannot tell
+const elements = tableName ? index.elementTables[tableName]?.elements ?? [] : [];
+```
+
+- The server config's table is used when it exists. A server config without the attribute selects `default`.
+- When it does not exist, and only one table exists, that one table is used.
+- A table without an `<Elements>` block is in the old format. Its elements are its `<Source>` rows, it has no groups and its default is null.
+- `elementnames` is deprecated. It is the union of all tables and does not say which table an element is in.
+
+### Traits and species
+
+`traits` (HXML-28) are keyed by their `Name` attribute, and `species` (HXML-37) by their `Key` attribute. Both have the standard name lists, `NamesByFilename` maps and collision reports.
+
+- `traitCategories` and `traitExclusiveGroups` fill the trait pickers.
+- `speciesDetails` holds the `Id`, `BranchOf`, `PlayerOption` and bodies of each species.
+- `speciesBodyIds` maps each body `Id` to every body that claims it. A body `Id` must be unique across all species, so more than one claim is an error in the content, and the claims tell which files to fix.
+
 ### Progress events
 
 `buildIndex` and `buildSection` emit progress events for UI streaming:
@@ -155,7 +197,10 @@ interface ProgressEvent {
 | `duplicateNamesFor(index, type)` | That type's collision report, `{}` when the type is clean or the cache predates 1.1.0. Use it when the type is a variable. |
 | `nameCollisionKey(name)` | The server's own index-key rule. Probe a collision report with this, never with a hand-rolled `toLowerCase()`. |
 | `decodeXmlEntities(raw)` / `xmlText(raw)` | Decode XML entities; `xmlText` also trims. The scrape applies these already — they are for a consumer scraping XML of its own. |
-| `migrateLegacyCacheBase()` | Rename the pre-1.1.0 lowercase vendor directory. Idempotent, best effort, and already called wherever this package creates its cache directory. |
+| `resolveElementTable(index, serverConfigName?)` | The name of the element table that the server uses, or `null`. See [Element tables](#element-tables). |
+| `listIndexCaches()` | Every cache directory, with its schema version, `worldKey`, `libraryPath`, `builtAt`, size, and the reason it can be removed. |
+| `pruneIndexCaches({ dryRun? })` | Remove the directories that `listIndexCaches` marks. Returns what it removed, or with `dryRun` what it would remove. |
+| `migrateLegacyCacheBase()` | Rename the previous cache base (Linux before 1.1.0, macOS before 1.2.0). Idempotent, best effort, and already called wherever this package creates its cache directory. |
 
 ## Development
 
