@@ -21,7 +21,9 @@ export const INDEX_TYPES = [
   'recipes',
   'serverconfigs',
   'spawngroups',
+  'species',
   'statuses',
+  'traits',
   'variantgroups',
   'worldmaps',
 ] as const;
@@ -47,6 +49,52 @@ export interface NpcStringKey {
   key: string;
   message: string;
   category: string;
+}
+
+/**
+ * The element structure of one element table (HXML-24).
+ *
+ * A table in the HXML-24 format has an `<Elements>` block. A table in the old
+ * format has no `<Elements>` block: its elements are the `Element` values of its
+ * `<Source>` rows, it has no groups, and it has no default element.
+ */
+export interface ElementTableIndex {
+  /** The `Key` of each `<Element>`, in file order. Old format: the `<Source>` row elements. */
+  elements: string[];
+  /**
+   * Each `<Group Key>` and its `Members`, in file order. A member can occur
+   * more than one time: each occurrence is one chance in a random pick.
+   */
+  groups: Record<string, string[]>;
+  /** The key of the element with `Default="true"`, or null when no element has it. */
+  defaultElement: string | null;
+}
+
+/** One `<Body>` of a species. */
+export interface SpeciesBodyDetail {
+  key: string;
+  /** The body `Id`, or null when it is missing or is not a number. */
+  id: number | null;
+  default: boolean;
+}
+
+/** The root attributes and the bodies of one species (HXML-37). */
+export interface SpeciesDetail {
+  /** The species `Id`, or null when it is missing or is not a number. */
+  id: number | null;
+  /** The key of the parent species, or null for a species that is not a branch. */
+  branchOf: string | null;
+  /** `Locked`, `Starter`, `Unlockable` or `ByBranch`, as written. Null when it is missing. */
+  playerOption: string | null;
+  bodies: SpeciesBodyDetail[];
+}
+
+/** One body that claims a body `Id`. */
+export interface SpeciesBodyClaim {
+  species: string;
+  body: string;
+  /** The type-relative path of the species file. */
+  filename: string;
 }
 
 /**
@@ -89,7 +137,9 @@ export interface WorldIndex {
   recipes: string[];
   serverconfigs: string[];
   spawngroups: string[];
+  species: string[];
   statuses: string[];
+  traits: string[];
   variantgroups: string[];
   worldmaps: string[];
 
@@ -106,7 +156,9 @@ export interface WorldIndex {
   archivedRecipes: string[];
   archivedServerconfigs: string[];
   archivedSpawngroups: string[];
+  archivedSpecies: string[];
   archivedStatuses: string[];
+  archivedTraits: string[];
   archivedVariantgroups: string[];
 
   // Filename → display name maps (filter by Name in editor file lists).
@@ -131,6 +183,8 @@ export interface WorldIndex {
   spawngroupsNamesByFilename: Record<string, string>;
   serverconfigsNamesByFilename: Record<string, string>;
   worldmapsNamesByFilename: Record<string, string>;
+  traitsNamesByFilename: Record<string, string>;
+  speciesNamesByFilename: Record<string, string>; // species Key, not a name
 
   // Name collisions, per type, grouped by `nameCollisionKey`. A reported pair
   // may leave one file unreachable by name; see that function for where the
@@ -150,7 +204,9 @@ export interface WorldIndex {
   recipesDuplicateNames: DuplicateNames;
   serverconfigsDuplicateNames: DuplicateNames;
   spawngroupsDuplicateNames: DuplicateNames;
+  speciesDuplicateNames: DuplicateNames;
   statusesDuplicateNames: DuplicateNames;
+  traitsDuplicateNames: DuplicateNames;
   variantgroupsDuplicateNames: DuplicateNames;
   worldmapsDuplicateNames: DuplicateNames;
 
@@ -196,12 +252,36 @@ export interface WorldIndex {
     largeMax: number;
   }>;
 
+  // Element tables (HXML-24). Use `resolveElementTable(index, serverConfigName)`
+  // to find the table that the server uses.
+  elementTables: Record<string, ElementTableIndex>; // table Name → its elements, groups and default
+  // Server config Name → its `ElementTable` attribute, or null when the
+  // attribute is not set. The server then selects the table named `default`.
+  serverconfigElementTables: Record<string, string | null>;
+
+  // Traits (HXML-28)
+  traitCategories: string[]; // each `Category` value, sorted
+  traitExclusiveGroups: Record<string, string[]>; // ExclusiveGroup → the traits in it, in file order
+
+  // Species (HXML-37). Keyed by the species `Key`.
+  speciesDetails: Record<string, SpeciesDetail>;
+  // Body `Id` → every body that claims it, in file order. The xml package
+  // requires a body Id to be unique across all species, so more than one claim
+  // is an error in the content.
+  speciesBodyIds: Record<string, SpeciesBodyClaim[]>;
+
   // Localization cross-references
   npcResponseCalls: Record<string, string>; // Call attribute → response text
   npcStringKeys: NpcStringKey[];
 
   // Aggregated catalogs
   creatureTypes: string[];
+  /**
+   * The union of the elements of all element tables, sorted.
+   *
+   * @deprecated Use `elementTables` and `resolveElementTable`. This list does
+   * not say which table an element is in. A later major version removes it.
+   */
   elementnames: string[];
   scripts: string[]; // relative paths of .lua files under world/scripts/
   cookieNames: string[]; // extracted from Lua via setcookie("…")

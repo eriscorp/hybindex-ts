@@ -118,6 +118,7 @@ const FIELD_TO_FILE: Record<string, string> = {
   elementtablesNamesByFilename: 'elementtables',
   elementtablesDuplicateNames: 'elementtables',
   elementnames: 'elementtables',
+  elementTables: 'elementtables',
 
   // creaturebehaviorsets
   creaturebehaviorsets: 'creaturebehaviorsets',
@@ -136,6 +137,23 @@ const FIELD_TO_FILE: Record<string, string> = {
   archivedServerconfigs: 'serverconfigs',
   serverconfigsNamesByFilename: 'serverconfigs',
   serverconfigsDuplicateNames: 'serverconfigs',
+  serverconfigElementTables: 'serverconfigs',
+
+  // traits
+  traits: 'traits',
+  archivedTraits: 'traits',
+  traitsNamesByFilename: 'traits',
+  traitsDuplicateNames: 'traits',
+  traitCategories: 'traits',
+  traitExclusiveGroups: 'traits',
+
+  // species
+  species: 'species',
+  archivedSpecies: 'species',
+  speciesNamesByFilename: 'species',
+  speciesDuplicateNames: 'species',
+  speciesDetails: 'species',
+  speciesBodyIds: 'species',
 
   // maps
   maps: 'maps',
@@ -211,22 +229,25 @@ export async function cleanupInWorldIndex(libraryPath: string): Promise<void> {
   ]);
 }
 
-// ── Vendor directory case migration (pre-1.1.0 → 1.1.0) ─────────────────────
+// ── Previous cache base migration (Linux 1.1.0, macOS 1.2.0) ─────────────────
 
 /**
- * Move the pre-1.1.0 lowercase vendor directory to the capitalized spelling the
- * rest of the house uses: `~/.config/erisco/hybindex` → `~/.config/Erisco/hybindex`.
+ * Move the previous cache base (`getLegacyCacheBase`) to the current one:
  *
- * Only Linux ever moves anything. Windows never wrote the lowercase form. macOS
- * wrote it, but its filesystem is case-insensitive, so the destination already
- * exists there, the guard skips, and nothing is renamed — which is the right
- * answer, because the two spellings name one directory. A rename that
- * "succeeded" on macOS would be the failure, not the success.
+ * - Linux: the pre-1.1.0 lowercase vendor directory to the capitalized spelling
+ *   the rest of the house uses: `~/.config/erisco/hybindex` →
+ *   `~/.config/Erisco/hybindex`.
+ * - macOS: the pre-1.2.0 base to the base the other Erisco tools use:
+ *   `~/.config/Erisco/hybindex` → `~/Library/Application Support/Erisco/hybindex`.
+ *   The moved tree holds only old schema versions, which `pruneIndexCaches`
+ *   removes.
  *
- * Skips when the capitalized base already exists, which is also the state
- * during the window where one consumer has upgraded and the other has not: both
- * directories stand, each app reads its own, and the split closes when the
- * second app upgrades.
+ * Windows never moves anything: it never used another base.
+ *
+ * Skips when the current base already exists, which is also the state during
+ * the window where one consumer has upgraded and the other has not: both
+ * directories stand, and each app reads its own. `pruneIndexCaches` removes
+ * the old schema versions from both bases.
  *
  * Best effort and idempotent. The index is a rebuildable cache, so a failed
  * rename costs a rebuild and nothing else. Called automatically wherever this
@@ -250,8 +271,8 @@ export async function migrateLegacyCacheBase(): Promise<void> {
   try {
     await fs.mkdir(dirname(current), { recursive: true });
     await fs.rename(legacy, current);
-    // Drop the now-empty lowercase vendor directory. rmdir refuses a non-empty
-    // one, so anything else that lives there is safe.
+    // Drop the now-empty old vendor directory. rmdir refuses a non-empty one,
+    // so anything else that lives there is safe.
     await fs.rmdir(dirname(legacy)).catch(() => { /* not empty, or gone */ });
   } catch { /* best effort */ }
 }

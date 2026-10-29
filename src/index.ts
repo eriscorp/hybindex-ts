@@ -36,6 +36,15 @@ export {
   fieldsForType,
 } from './storage.js';
 
+// Cache housekeeping. Nothing calls these automatically: an app calls them from
+// a user action, such as "Clear old indexes".
+export { listIndexCaches, pruneIndexCaches } from './caches.js';
+export type { IndexCacheEntry, IndexCacheRemoveReason, PruneIndexCachesOptions } from './caches.js';
+
+// Element table selection. Use this to find the table that the server uses, in
+// place of the deprecated `elementnames` union.
+export { DEFAULT_ELEMENT_TABLE, resolveElementTable } from './elements.js';
+
 // Name identity. A consumer probing a collision report uses `nameCollisionKey`,
 // so it normalizes the same way the report was built — do not lowercase by hand
 // at the call site.
@@ -63,9 +72,13 @@ export type {
   WorldIndex,
   IndexType,
   DuplicateNames,
+  ElementTableIndex,
   MapDetail,
   CategoryDetail,
   NpcStringKey,
+  SpeciesBodyClaim,
+  SpeciesBodyDetail,
+  SpeciesDetail,
   BuildOptions,
   ProgressEvent,
 } from './types.js';

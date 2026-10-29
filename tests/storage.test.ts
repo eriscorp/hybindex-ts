@@ -242,16 +242,25 @@ describe('path helpers', () => {
     expect(segments).not.toContain('erisco');
   });
 
-  it('getLegacyCacheBase names the old spelling only where one can exist', () => {
+  it('puts the macOS base in Application Support, with the other Erisco tools', () => {
+    delete process.env.HYBINDEX_CACHE_DIR;
+    expect(resolveCacheBase('darwin')).toBe(
+      join(homedir(), 'Library', 'Application Support', 'Erisco', 'hybindex'),
+    );
+    expect(resolveCacheBase('linux')).toBe(join(homedir(), '.config', 'Erisco', 'hybindex'));
+  });
+
+  it('getLegacyCacheBase names the previous base only where one can exist', () => {
     expect(getLegacyCacheBase()).toBeNull(); // HYBINDEX_CACHE_DIR overrides the base
     delete process.env.HYBINDEX_CACHE_DIR;
-    const legacy = getLegacyCacheBase();
-    if (process.platform === 'win32') {
-      // Windows never wrote the lowercase form, so there is nothing to move.
-      expect(legacy).toBeNull();
-    } else {
-      expect(legacy).toBe(join(homedir(), '.config', 'erisco', 'hybindex'));
-      expect(legacy).not.toBe(resolveCacheBase());
+    // Windows never used another base, so there is nothing to move.
+    expect(getLegacyCacheBase('win32')).toBeNull();
+    // Linux: the pre-1.1.0 lowercase spelling.
+    expect(getLegacyCacheBase('linux')).toBe(join(homedir(), '.config', 'erisco', 'hybindex'));
+    // macOS: the pre-1.2.0 base, the same as the Linux base.
+    expect(getLegacyCacheBase('darwin')).toBe(join(homedir(), '.config', 'Erisco', 'hybindex'));
+    for (const platform of ['linux', 'darwin'] as const) {
+      expect(getLegacyCacheBase(platform)).not.toBe(resolveCacheBase(platform));
     }
   });
 
@@ -277,7 +286,7 @@ describe('path helpers', () => {
   });
 });
 
-// ── Vendor directory case migration ─────────────────────────────────────────
+// ── Previous cache base migration ───────────────────────────────────────────
 
 describe('migrateLegacyCacheBase', () => {
   it('does nothing while HYBINDEX_CACHE_DIR overrides the base', async () => {
@@ -303,11 +312,13 @@ describe('migrateLegacyCacheBase', () => {
     }
   });
 
-  // Only Linux ever moves anything, so only Linux can test the move. On macOS
-  // the two spellings name one directory and the guard must decline; on Windows
-  // the lowercase form never existed. `os.homedir()` reads $HOME on POSIX, which
-  // is what lets this run against a temp home instead of the real one.
-  describe.skipIf(process.platform === 'win32')('on a case-sensitive filesystem', () => {
+  // Only Linux and macOS move anything: Windows never used another base. Linux
+  // moves the lowercase spelling, and macOS moves `~/.config/Erisco/hybindex`.
+  // On both, the vendor directory that the move empties is
+  // `~/.config/erisco`: on macOS that is the same directory as
+  // `~/.config/Erisco`. `os.homedir()` reads $HOME on POSIX, which is what lets
+  // this run against a temp home instead of the real one.
+  describe.skipIf(process.platform === 'win32')('on POSIX', () => {
     let home: string;
     let priorHome: string | undefined;
 
@@ -324,7 +335,7 @@ describe('migrateLegacyCacheBase', () => {
       await fs.rm(home, { recursive: true, force: true });
     });
 
-    it('renames the lowercase base and drops the emptied vendor directory', async () => {
+    it('renames the previous base and drops the emptied vendor directory', async () => {
       const legacy = getLegacyCacheBase()!;
       await fs.mkdir(join(legacy, 'v3'), { recursive: true });
       await fs.writeFile(join(legacy, 'v3', 'marker'), 'x', 'utf-8');
@@ -334,11 +345,11 @@ describe('migrateLegacyCacheBase', () => {
       const moved = join(resolveCacheBase(), 'v3', 'marker');
       await expect(fs.readFile(moved, 'utf-8')).resolves.toBe('x');
       await expect(fs.access(legacy)).rejects.toThrow();
-      // The lowercase vendor directory is gone, not left standing and empty.
+      // The old vendor directory is gone, not left standing and empty.
       await expect(fs.access(join(home, '.config', 'erisco'))).rejects.toThrow();
     });
 
-    it('leaves both alone when the capitalized base is already in use', async () => {
+    it('leaves both alone when the current base is already in use', async () => {
       // The window where one consumer has upgraded and the other has not.
       const legacy = getLegacyCacheBase()!;
       await fs.mkdir(legacy, { recursive: true });
