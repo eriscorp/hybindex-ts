@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - The new element format gives each `<Element>` a `Name` attribute, so without this fix an element table without a root `Name` took the name of its first element.
   - `world` has 582 archived spawn groups in an old format with no root `Name`. Each was listed under the name of its first `<Map>`. They now have no name, and `archivedSpawngroups` drops from 574 names to 1.
 
+### Tooling
+
+- Update `vitest` and `@vitest/coverage-v8` to `^4.1.12`, and run `npm audit fix`. The CI audit step failed on advisories in the dev dependencies (vitest, vite, esbuild, source-map-js). The published package has no runtime dependencies, so a consumer was not affected.
+
 ## [1.1.0] - 2026-08-09
 
 ### Fixed
