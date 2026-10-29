@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `world`'s `serverconfigs/config.xml` was indexed as `Danaan`, the name of one of its `<Age>` elements, and `ceridwen`'s as `discuss`, the name of a `<Board>`. The server names both `default`, and so does the index now. An element table without a root `Name` is also `default`.
   - The new element format gives each `<Element>` a `Name` attribute, so without this fix an element table without a root `Name` took the name of its first element.
   - `world` has 582 archived spawn groups in an old format with no root `Name`. Each was listed under the name of its first `<Map>`. They now have no name, and `archivedSpawngroups` drops from 574 names to 1.
+- **The collision key's docs said it was the server's rule for every type.** It matches the server's rule for maps, short of culture-specific casing. The server keys items and castables by hashed ids and finds them by exact or all-lower-case name, keys statuses and the other loaded types by their exact name (localizations by locale), and does not load recipes. A collision report can therefore name a pair the server keeps apart, and can miss an item pair whose names differ only in non-ASCII letters. A duplicate map name sends warps to the first map silently, rather than failing with an error. `nameCollisionKey` itself is unchanged.
 
 ### Tooling
 

@@ -1,23 +1,24 @@
 /**
- * Name identity, matched to the server's.
+ * Name identity, as far as the server's keys allow.
  *
  * A `<Name>` in world XML is a key, not a label. The server resolves a warp
- * destination out of a name-keyed index (`Warp.cs` → `TryGetValueByIndex`), and
- * a name-keyed index holds one entry per key. Two files claiming one name means
- * one of them is unreachable by name: the warp does nothing and the server logs
- * an error. Nothing in the XML prevents it, so the index reports it.
+ * destination out of a name-keyed index (`Warp.cs` → `TryGetValueByIndex`) that
+ * keeps the first map registered under a name. A second map with that name is
+ * unreachable by name, and a warp meant for it silently lands on the first.
+ * Nothing in the XML prevents it, so the index reports it.
  */
 
 import type { DuplicateNames, IndexType, WorldIndex } from './types.js';
 
 /**
- * Normalize a name the way the server normalizes an index key, so a collision
- * reported here is a collision the server actually has.
+ * The collision key: a name normalized to NFC and lower-cased with the
+ * locale-independent `toLowerCase`. Collision reports are grouped by it.
  *
- * Hybrasyl sanitizes every index key with `key.ToString().Normalize().ToLower()`
- * — `WorldStateStore.Sanitize` for maps, and the identical line in the XML
- * package's `XmlManager` for the rest. So the comparison is Unicode-normalized
- * (NFC) and case-insensitive: `Tagor Tavern` and `tagor tavern` are one key.
+ * It matches the server's map key (short of culture-specific casing) and
+ * approximates every other type, so a report is a warning: it can name a pair the server keeps apart,
+ * and rarely miss one the server merges. How the server keys and looks up each
+ * type, and why references are not uniformly case-insensitive, is in the
+ * README under "Duplicate names".
  *
  * Whitespace is kept. The docstring beside `Sanitize` claims it removes
  * whitespace — `MiLeTh InN RoOm 1` → `milethinnroom1` — but `Normalize()` is

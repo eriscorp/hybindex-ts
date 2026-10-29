@@ -124,7 +124,7 @@ Decoding is one pass, so `&amp;lt;` stays the text `&lt;`. An entity this packag
 
 ### Duplicate names
 
-A `<Name>` is a key, not a label. The server resolves a warp destination out of a name-keyed index, and such an index holds one entry per key — so two active files claiming one name leaves one of them unreachable by name, which shows up as a warp that does nothing and an error line in the server log. Nothing in the XML prevents it, so the index reports it:
+A `<Name>` is a key, not a label. The server resolves a warp destination out of a name-keyed index that keeps the first map registered under a name, so a second map with that name is unreachable by name and a warp meant for it silently lands on the first. Other types are keyed differently; the bullets below say how. Nothing in the XML prevents it, so the index reports it:
 
 ```ts
 import { duplicateNamesFor, nameCollisionKey } from '@eriscorp/hybindex-ts';
@@ -139,7 +139,7 @@ const clash = dupes[nameCollisionKey(candidateName)];
 ```
 
 - **It is data, not an error.** A world with a collision still builds and still opens. Warn in the editor, naming the other file; do not block, because a builder mid-rename passes through a colliding state legitimately and a hard block cannot fix the files that already exist.
-- **The comparison is the server's.** Hybrasyl sanitizes every index key with `key.ToString().Normalize().ToLower()`, so the check is Unicode-normalized and case-insensitive. Probe with `nameCollisionKey` rather than lowercasing by hand. Whitespace is kept — the docstring beside the server's `Sanitize` says it is removed, but the code does not remove it.
+- **The comparison is Unicode-normalized and case-insensitive, which matches the server's rule for maps (short of culture-specific casing) and no other type.** The server keys an item by an id hashed from its normalized, lower-cased name and gender, encoded as ASCII, so names differing only in non-ASCII letters can share an id; it keys a castable by an id hashed from its name. Both are also found by their exact or all-lower-case name. Statuses and the other loaded types are keyed by their exact `Name` (localizations by `Locale`), and recipes are not loaded. So a report can name a pair the server keeps apart and, rarely, miss one it merges. Reference casing is not uniform either: a map matches in any case, an item or castable by exact or all-lower-case spelling, and a status depends on the caller (a castable passes the name through unchanged, an item lowercases it first). Probe with `nameCollisionKey` rather than lowercasing by hand.
 - **Uniqueness is per type.** An item and a map may share a name.
 - **Archived (`.ignore/`) files are never reported.** The server does not load them, so an archived copy of a live file is not a collision.
 
@@ -195,7 +195,7 @@ interface ProgressEvent {
 | `isArchivedPath(key)` | True when a filename key lives under an `.ignore/` archive — i.e. content the server never loads. |
 | `listSectionFiles(libraryPath, type)` | `{ dir, active[], archived[] }` — the single definition of which files belong to a section. Enumerate a type directory with this rather than your own `readdir`, or your file list drifts from the index's keys. |
 | `duplicateNamesFor(index, type)` | That type's collision report, `{}` when the type is clean or the cache predates 1.1.0. Use it when the type is a variable. |
-| `nameCollisionKey(name)` | The server's own index-key rule. Probe a collision report with this, never with a hand-rolled `toLowerCase()`. |
+| `nameCollisionKey(name)` | The key collision reports are grouped by. Probe a report with this, never with a hand-rolled `toLowerCase()`. |
 | `decodeXmlEntities(raw)` / `xmlText(raw)` | Decode XML entities; `xmlText` also trims. The scrape applies these already — they are for a consumer scraping XML of its own. |
 | `resolveElementTable(index, serverConfigName?)` | The name of the element table that the server uses, or `null`. See [Element tables](#element-tables). |
 | `listIndexCaches()` | Every cache directory, with its schema version, `worldKey`, `libraryPath`, `builtAt`, size, and the reason it can be removed. |
