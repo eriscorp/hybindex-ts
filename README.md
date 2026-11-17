@@ -61,7 +61,7 @@ Pre-0.3.0 the index lived in-world under `world/.creidhne/`. There is no migrati
 
 Before 1.1.0 the base off Windows was `~/.config/erisco/hybindex`, lowercased. Every other Erisco app writes `Erisco` on every platform, so this was the one exception — and only where it was invisible, since NTFS and APFS are case-insensitive and only Linux ever showed two vendor directories. Before 1.2.0 the base on macOS was `~/.config/Erisco/hybindex`, the Linux base. `migrateLegacyCacheBase` renames the old base into place once; it runs automatically wherever this package creates its cache directory, and is exported so an app can also call it at startup.
 
-`SCHEMA_VERSION` namespaces the cache directory, so a schema bump rebuilds from scratch on next run rather than migrating. It is now `v5`.
+`SCHEMA_VERSION` namespaces the cache directory, so a schema bump rebuilds from scratch on next run rather than migrating. It is now `v6`.
 
 ### Old caches
 

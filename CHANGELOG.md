@@ -4,6 +4,16 @@ All notable changes to `@eriscorp/hybindex-ts` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-17
+
+### Added
+
+- **`MapDetail.music` (HTOO-357).** `mapDetails` and `ignoredMapDetails` carry the root `<Map>` element's `Music` attribute. The field is absent when the file does not set it. The XSD default is 0, but 0 is a music id, so the index does not write 0 for a missing value. An attribute on a child element does not count.
+
+### Changed
+
+- **`SCHEMA_VERSION` is now `6`.** The map build is incremental, so without a new cache a v5 index would show no music for an unchanged map, and an app still on 1.2.0 would write the field away again. The first build after this release rebuilds from source into `v6/`. `pruneIndexCaches` removes the old `v5/`.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added

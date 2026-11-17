@@ -320,12 +320,17 @@ function parseMapDetail(content: string, rel: string): MapDetail | null {
   const yMatch = /\bY="(\d+)"/.exec(content);
   if (!idMatch?.[1] || !xMatch?.[1] || !yMatch?.[1]) return null;
   const nameMatch = /<Name>([^<]+)<\/Name>/.exec(content);
+  // Music is read from the root <Map> tag only, so an attribute of the same
+  // name on a child element cannot supply it. A missing value stays missing.
+  const rootTag = /<Map\b[^>]*>/.exec(content)?.[0];
+  const musicMatch = rootTag ? /\sMusic="(\d+)"/.exec(rootTag) : null;
   return {
     id: parseInt(idMatch[1], 10),
     name: xmlText(nameMatch?.[1]),
     filename: rel,
     x: parseInt(xMatch[1], 10),
     y: parseInt(yMatch[1], 10),
+    ...(musicMatch?.[1] ? { music: parseInt(musicMatch[1], 10) } : {}),
   };
 }
 
