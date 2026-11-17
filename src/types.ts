@@ -37,6 +37,12 @@ export interface MapDetail {
   filename: string;
   x: number;
   y: number;
+  /**
+   * The root `<Map>` element's `Music` attribute, when the file sets it
+   * (HTOO-357). Absent when the file does not set it. The XSD default is 0,
+   * but 0 is a music id, so the index does not write 0 for a missing value.
+   */
+  music?: number;
 }
 
 export interface CategoryDetail {

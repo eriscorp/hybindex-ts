@@ -103,6 +103,34 @@ describe('buildIndex', () => {
     expect(index.mapDetails).toEqual([{ id: 500, name: 'Piet', filename: 'piet.xml', x: 10, y: 20 }]);
   });
 
+  it('carries the root Music attribute into mapDetails, and omits it when absent (HTOO-357)', async () => {
+    const withMusic = (name: string, id: number, music: string, child = ''): string =>
+      `<?xml version="1.0" encoding="utf-8"?>
+<Map xmlns="http://www.hybrasyl.com/XML/Hybrasyl/2020-02" Id="${id}" Music="${music}" X="1" Y="2">
+  <Name>${name}</Name>${child}
+</Map>`;
+    await writeXml(libraryPath, 'maps', 'loud.xml', withMusic('Loud', 1, '12'));
+    // 0 is a music id, not "no music".
+    await writeXml(libraryPath, 'maps', 'zero.xml', withMusic('Zero', 2, '0'));
+    await writeXml(libraryPath, 'maps', 'none.xml', mapXml('None', 3, 1, 2));
+    // A child element's attribute of the same name does not count.
+    await writeXml(
+      libraryPath,
+      'maps',
+      'child.xml',
+      mapXml('Child', 4, 1, 2).replace('</Map>', '  <Reactor Music="9" />\n</Map>'),
+    );
+    await writeArchivedXml(libraryPath, 'maps', 'old.xml', withMusic('Old', 5, '7'));
+
+    const index = await buildIndex(libraryPath);
+    const byName = Object.fromEntries(index.mapDetails.map((d) => [d.name, d]));
+    expect(byName['Loud']?.music).toBe(12);
+    expect(byName['Zero']?.music).toBe(0);
+    expect(byName['None']).not.toHaveProperty('music');
+    expect(byName['Child']).not.toHaveProperty('music');
+    expect(index.ignoredMapDetails[0]?.music).toBe(7);
+  });
+
   it('scans archived files into archived<Type> and keys them under .ignore/', async () => {
     await writeXml(libraryPath, 'castables', 'active.xml', castableXml('Active Spell'));
     await writeArchivedXml(libraryPath, 'castables', 'archived.xml', castableXml('Archived Spell'));
